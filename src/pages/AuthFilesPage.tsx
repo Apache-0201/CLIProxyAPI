@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import gsap from 'gsap';
+import { animate } from 'motion/mini';
+import type { AnimationPlaybackControlsWithThen } from 'motion-dom';
 import { useInterval } from '@/hooks/useInterval';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
@@ -24,7 +33,7 @@ import {
   isRuntimeOnlyAuthFile,
   normalizeProviderKey,
   type QuotaProviderType,
-  type ResolvedTheme
+  type ResolvedTheme,
 } from '@/features/authFiles/constants';
 import { AuthFileCard } from '@/features/authFiles/components/AuthFileCard';
 import { AuthFileDetailModal } from '@/features/authFiles/components/AuthFileDetailModal';
@@ -43,6 +52,11 @@ import { useAuthStore, useNotificationStore, useThemeStore } from '@/stores';
 import { authFilesApi, type CodexCleanupEvent } from '@/services/api/authFiles';
 import type { AuthFileItem } from '@/types';
 import styles from './AuthFilesPage.module.scss';
+
+const easePower3Out = (progress: number) => 1 - (1 - progress) ** 4;
+const easePower2In = (progress: number) => progress ** 3;
+const BATCH_BAR_BASE_TRANSFORM = 'translateX(-50%)';
+const BATCH_BAR_HIDDEN_TRANSFORM = 'translateX(-50%) translateY(56px)';
 
 export function AuthFilesPage() {
   const { t } = useTranslation();
@@ -64,6 +78,7 @@ export function AuthFilesPage() {
   const [viewMode, setViewMode] = useState<'diagram' | 'list'>('list');
   const [batchActionBarVisible, setBatchActionBarVisible] = useState(false);
   const floatingBatchActionsRef = useRef<HTMLDivElement>(null);
+  const batchActionAnimationRef = useRef<AnimationPlaybackControlsWithThen | null>(null);
   const previousSelectionCountRef = useRef(0);
   const selectionCountRef = useRef(0);
 
@@ -90,7 +105,7 @@ export function AuthFilesPage() {
     selectAllVisible,
     deselectAll,
     batchSetStatus,
-    batchDelete
+    batchDelete,
   } = useAuthFilesData({ refreshKeyStats });
 
   const statusBarCache = useAuthFilesStatusBarCache(files, statusBarByAuthIndex);
@@ -109,7 +124,7 @@ export function AuthFilesPage() {
     handleDeleteLink,
     handleToggleFork,
     handleRenameAlias,
-    handleDeleteAlias
+    handleDeleteAlias,
   } = useAuthFilesOauth({ viewMode, files });
 
   const {
@@ -120,7 +135,7 @@ export function AuthFilesPage() {
     modelsFileType,
     modelsError,
     showModels,
-    closeModelsModal
+    closeModelsModal,
   } = useAuthFilesModels();
 
   const {
@@ -130,11 +145,11 @@ export function AuthFilesPage() {
     openPrefixProxyEditor,
     closePrefixProxyEditor,
     handlePrefixProxyChange,
-    handlePrefixProxySave
+    handlePrefixProxySave,
   } = useAuthFilesPrefixProxyEditor({
     disableControls: connectionStatus !== 'connected',
     loadFiles,
-    loadKeyStats: refreshKeyStats
+    loadKeyStats: refreshKeyStats,
   });
 
   const disableControls = connectionStatus !== 'connected';
@@ -372,7 +387,7 @@ export function AuthFilesPage() {
       }
       const nextSearch = params.toString();
       navigate(`/auth-files/oauth-excluded${nextSearch ? `?${nextSearch}` : ''}`, {
-        state: { fromAuthFiles: true }
+        state: { fromAuthFiles: true },
       });
     },
     [filter, navigate]
@@ -387,7 +402,7 @@ export function AuthFilesPage() {
       }
       const nextSearch = params.toString();
       navigate(`/auth-files/oauth-model-alias${nextSearch ? `?${nextSearch}` : ''}`, {
-        state: { fromAuthFiles: true }
+        state: { fromAuthFiles: true },
       });
     },
     [filter, navigate]
@@ -434,30 +449,54 @@ export function AuthFilesPage() {
     const actionsEl = floatingBatchActionsRef.current;
     if (!actionsEl) return;
 
-    gsap.killTweensOf(actionsEl);
+    batchActionAnimationRef.current?.stop();
+    batchActionAnimationRef.current = null;
 
     if (currentCount > 0 && previousCount === 0) {
-      gsap.fromTo(
+      batchActionAnimationRef.current = animate(
         actionsEl,
-        { y: 56, autoAlpha: 0 },
-        { y: 0, autoAlpha: 1, duration: 0.28, ease: 'power3.out' }
+        {
+          transform: [BATCH_BAR_HIDDEN_TRANSFORM, BATCH_BAR_BASE_TRANSFORM],
+          opacity: [0, 1],
+        },
+        {
+          duration: 0.28,
+          ease: easePower3Out,
+          onComplete: () => {
+            actionsEl.style.transform = BATCH_BAR_BASE_TRANSFORM;
+            actionsEl.style.opacity = '1';
+          },
+        }
       );
     } else if (currentCount === 0 && previousCount > 0) {
-      gsap.to(actionsEl, {
-        y: 56,
-        autoAlpha: 0,
-        duration: 0.22,
-        ease: 'power2.in',
-        onComplete: () => {
-          if (selectionCountRef.current === 0) {
-            setBatchActionBarVisible(false);
-          }
+      batchActionAnimationRef.current = animate(
+        actionsEl,
+        {
+          transform: [BATCH_BAR_BASE_TRANSFORM, BATCH_BAR_HIDDEN_TRANSFORM],
+          opacity: [1, 0],
+        },
+        {
+          duration: 0.22,
+          ease: easePower2In,
+          onComplete: () => {
+            if (selectionCountRef.current === 0) {
+              setBatchActionBarVisible(false);
+            }
+          },
         }
-      });
+      );
     }
 
     previousSelectionCountRef.current = currentCount;
   }, [batchActionBarVisible, selectionCount]);
+
+  useEffect(
+    () => () => {
+      batchActionAnimationRef.current?.stop();
+      batchActionAnimationRef.current = null;
+    },
+    []
+  );
 
   const renderFilterTags = () => (
     <div className={styles.filterTags}>
@@ -475,7 +514,7 @@ export function AuthFilesPage() {
             style={{
               backgroundColor: isActive ? color.text : color.bg,
               color: isActive ? activeTextColor : color.text,
-              borderColor: color.text
+              borderColor: color.text,
             }}
             onClick={() => {
               setFilter(type);
@@ -624,9 +663,14 @@ export function AuthFilesPage() {
         {loading ? (
           <div className={styles.hint}>{t('common.loading')}</div>
         ) : pageItems.length === 0 ? (
-          <EmptyState title={t('auth_files.search_empty_title')} description={t('auth_files.search_empty_desc')} />
+          <EmptyState
+            title={t('auth_files.search_empty_title')}
+            description={t('auth_files.search_empty_desc')}
+          />
         ) : (
-          <div className={`${styles.fileGrid} ${quotaFilterType ? styles.fileGridQuotaManaged : ''}`}>
+          <div
+            className={`${styles.fileGrid} ${quotaFilterType ? styles.fileGridQuotaManaged : ''}`}
+          >
             {pageItems.map((file) => (
               <AuthFileCard
                 key={file.name}
@@ -665,7 +709,7 @@ export function AuthFilesPage() {
               {t('auth_files.pagination_info', {
                 current: currentPage,
                 total: totalPages,
-                count: filtered.length
+                count: filtered.length,
               })}
             </div>
             <Button
