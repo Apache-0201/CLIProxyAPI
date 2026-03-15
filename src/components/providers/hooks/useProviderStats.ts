@@ -77,7 +77,7 @@ export const useProviderStats = () => {
   }, []);
 
   useInterval(() => {
-    void refreshKeyStats();
+    void refreshKeyStats().catch(() => {});
   }, 240_000);
 
   return { keyStats, statusBarBySource, loadKeyStats, refreshKeyStats, isLoading };
