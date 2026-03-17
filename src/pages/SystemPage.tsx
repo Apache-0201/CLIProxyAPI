@@ -341,6 +341,8 @@ export function SystemPage() {
                 <div className={styles.linkTitle}>
                   {t('system_info.link_webui_repo')}
                   <IconExternalLink size={14} />
+                </div>
+                <div className={styles.linkDesc}>{t('system_info.link_webui_repo_desc')}</div>
               </div>
             </a>
 
