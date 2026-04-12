@@ -209,18 +209,6 @@ const THEME_CARDS: Array<{
   },
 ];
 
-const parseVersionSegments = (version?: string | null) => {
-  if (!version) return null;
-  const cleaned = version.trim().replace(/^v/i, '');
-  if (!cleaned) return null;
-  const parts = cleaned
-    .split(/[^0-9]+/)
-    .filter(Boolean)
-    .map((segment) => Number.parseInt(segment, 10))
-    .filter(Number.isFinite);
-  return parts.length ? parts : null;
-};
-
 export function MainLayout() {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
