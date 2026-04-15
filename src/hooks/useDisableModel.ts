@@ -78,7 +78,7 @@ export function useDisableModel(options: UseDisableModelOptions): UseDisableMode
       const providerName = resolveProvider(source, providerMap);
       const displayName = providerName
         ? `${providerName} / ${model}`
-        : `${source.slice(0, 8)}*** / ${model}`;
+        : `${source} / ${model}`;
       setUnsupportedState({
         providerType,
         model,

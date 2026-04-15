@@ -62,11 +62,12 @@ export interface DisableState {
  * @returns 脱敏后的字符串
  */
 export function maskSecret(key: string): string {
-  if (!key || key === '-' || key === 'unknown') return key || '-';
-  if (key.length <= 8) {
-    return `${key.slice(0, 4)}***`;
-  }
-  return `${key.slice(0, 4)}***${key.slice(-4)}`;
+  // if (!key || key === '-' || key === 'unknown') return key || '-';
+  // if (key.length <= 8) {
+  //   return `${key.slice(0, 4)}***`;
+  // }
+  // return `${key.slice(0, 4)}***${key.slice(-4)}`;
+  return key
 }
 
 /**
