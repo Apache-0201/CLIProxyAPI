@@ -58,7 +58,7 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
     const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const array = new Uint8Array(17);
     crypto.getRandomValues(array);
-    return 'sk-' + Array.from(array, (b) => charset[b % charset.length]).join('');
+    return `${keyInputValue || 'sk'}-${Array.from(array, (b) => charset[b % charset.length]).join('')}`;
   }
 
   const openAddModal = () => {
@@ -105,7 +105,11 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
     if (editingEntryId === null) {
       onChange([...value, { id: makeClientId(), key: trimmedKey, name: trimmedName }]);
     } else {
-      onChange(value.map((e) => e.id === editingEntryId ? { ...e, key: trimmedKey, name: trimmedName } : e));
+      onChange(
+        value.map((e) =>
+          e.id === editingEntryId ? { ...e, key: trimmedKey, name: trimmedName } : e
+        )
+      );
     }
     closeModal();
   };
@@ -125,7 +129,9 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
 
   return (
     <div className="form-group" style={{ marginBottom: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
+      >
         <label style={{ margin: 0 }}>{t('config_management.visual.api_keys.label')}</label>
         <Button size="sm" onClick={openAddModal} disabled={disabled}>
           {t('config_management.visual.api_keys.add')}
@@ -156,7 +162,12 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
                 <div className="item-subtitle">{maskApiKey(entry.key)}</div>
               </div>
               <div className="item-actions">
-                <Button variant="secondary" size="sm" onClick={() => handleCopy(entry.key)} disabled={disabled}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleCopy(entry.key)}
+                  disabled={disabled}
+                >
                   {t('common.copy')}
                 </Button>
                 <Button
@@ -186,14 +197,20 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
       <Modal
         open={modalOpen}
         onClose={closeModal}
-        title={editingEntryId !== null ? t('config_management.visual.api_keys.edit_title') : t('config_management.visual.api_keys.add_title')}
+        title={
+          editingEntryId !== null
+            ? t('config_management.visual.api_keys.edit_title')
+            : t('config_management.visual.api_keys.add_title')
+        }
         footer={
           <>
             <Button variant="secondary" onClick={closeModal} disabled={disabled}>
               {t('config_management.visual.common.cancel')}
             </Button>
             <Button onClick={handleSave} disabled={disabled}>
-              {editingEntryId !== null ? t('config_management.visual.common.update') : t('config_management.visual.common.add')}
+              {editingEntryId !== null
+                ? t('config_management.visual.common.update')
+                : t('config_management.visual.common.add')}
             </Button>
           </>
         }
@@ -210,7 +227,9 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
           />
         </div>
         <div className="form-group">
-          <label htmlFor={apiKeyInputId}>{t('config_management.visual.api_keys.input_label')}</label>
+          <label htmlFor={apiKeyInputId}>
+            {t('config_management.visual.api_keys.input_label')}
+          </label>
           <div className={styles.apiKeyModalInputRow}>
             <input
               id={apiKeyInputId}
@@ -232,8 +251,14 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
               {t('config_management.visual.api_keys.generate')}
             </Button>
           </div>
-          <div id={apiKeyHintId} className="hint">{t('config_management.visual.api_keys.input_hint')}</div>
-          {formError && <div id={apiKeyErrorId} className="error-box">{formError}</div>}
+          <div id={apiKeyHintId} className="hint">
+            {t('config_management.visual.api_keys.input_hint')}
+          </div>
+          {formError && (
+            <div id={apiKeyErrorId} className="error-box">
+              {formError}
+            </div>
+          )}
         </div>
       </Modal>
     </div>
@@ -259,7 +284,10 @@ const StringListEditor = memo(function StringListEditor({
   const renderItemIds = useMemo(() => {
     if (itemIds.length === items.length) return itemIds;
     if (itemIds.length > items.length) return itemIds.slice(0, items.length);
-    return [...itemIds, ...Array.from({ length: items.length - itemIds.length }, () => makeClientId())];
+    return [
+      ...itemIds,
+      ...Array.from({ length: items.length - itemIds.length }, () => makeClientId()),
+    ];
   }, [itemIds, items.length]);
 
   const updateItem = (index: number, nextValue: string) =>
@@ -276,7 +304,10 @@ const StringListEditor = memo(function StringListEditor({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {items.map((item, index) => (
-        <div key={renderItemIds[index] ?? `item-${index}`} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div
+          key={renderItemIds[index] ?? `item-${index}`}
+          style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
+        >
           <input
             className="input"
             placeholder={placeholder}
@@ -354,7 +385,11 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
     updateRule(ruleIndex, { models: rule.models.filter((_, i) => i !== modelIndex) });
   };
 
-  const updateModel = (ruleIndex: number, modelIndex: number, patch: Partial<PayloadModelEntry>) => {
+  const updateModel = (
+    ruleIndex: number,
+    modelIndex: number,
+    patch: Partial<PayloadModelEntry>
+  ) => {
     const rule = rules[ruleIndex];
     updateRule(ruleIndex, {
       models: rule.models.map((m, i) => (i === modelIndex ? { ...m, ...patch } : m)),
@@ -377,7 +412,11 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
     updateRule(ruleIndex, { params: rule.params.filter((_, i) => i !== paramIndex) });
   };
 
-  const updateParam = (ruleIndex: number, paramIndex: number, patch: Partial<PayloadParamEntry>) => {
+  const updateParam = (
+    ruleIndex: number,
+    paramIndex: number,
+    patch: Partial<PayloadParamEntry>
+  ) => {
     const rule = rules[ruleIndex];
     updateRule(ruleIndex, {
       params: rule.params.map((p, i) => (i === paramIndex ? { ...p, ...patch } : p)),
@@ -412,7 +451,11 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
     if (param.valueType === 'boolean') {
       return (
         <Select
-          value={param.value.toLowerCase() === 'true' || param.value.toLowerCase() === 'false' ? param.value.toLowerCase() : ''}
+          value={
+            param.value.toLowerCase() === 'true' || param.value.toLowerCase() === 'false'
+              ? param.value.toLowerCase()
+              : ''
+          }
           options={booleanValueOptions}
           placeholder={t('config_management.visual.payload_rules.value_boolean')}
           disabled={disabled}
@@ -470,18 +513,30 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
               flexWrap: 'wrap',
             }}
           >
-            <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{t('config_management.visual.payload_rules.rule')} {ruleIndex + 1}</div>
-            <Button variant="ghost" size="sm" onClick={() => removeRule(ruleIndex)} disabled={disabled}>
+            <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+              {t('config_management.visual.payload_rules.rule')} {ruleIndex + 1}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => removeRule(ruleIndex)}
+              disabled={disabled}
+            >
               {t('config_management.visual.common.delete')}
             </Button>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('config_management.visual.payload_rules.models')}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              {t('config_management.visual.payload_rules.models')}
+            </div>
             {(rule.models.length ? rule.models : []).map((model, modelIndex) => (
               <div
                 key={model.id}
-                className={[styles.payloadRuleModelRow, protocolFirst ? styles.payloadRuleModelRowProtocolFirst : '']
+                className={[
+                  styles.payloadRuleModelRow,
+                  protocolFirst ? styles.payloadRuleModelRowProtocolFirst : '',
+                ]
                   .filter(Boolean)
                   .join(' ')}
               >
@@ -542,14 +597,21 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
               </div>
             ))}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="secondary" size="sm" onClick={() => addModel(ruleIndex)} disabled={disabled}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => addModel(ruleIndex)}
+                disabled={disabled}
+              >
                 {t('config_management.visual.payload_rules.add_model')}
               </Button>
             </div>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('config_management.visual.payload_rules.params')}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              {t('config_management.visual.payload_rules.params')}
+            </div>
             {(rule.params.length ? rule.params : []).map((param, paramIndex) => {
               const paramError = getParamErrorMessage(param);
 
@@ -592,12 +654,19 @@ export const PayloadRulesEditor = memo(function PayloadRulesEditor({
                       {t('config_management.visual.common.delete')}
                     </Button>
                   </div>
-                  {paramError && <div className={`error-box ${styles.payloadParamError}`}>{paramError}</div>}
+                  {paramError && (
+                    <div className={`error-box ${styles.payloadParamError}`}>{paramError}</div>
+                  )}
                 </div>
               );
             })}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="secondary" size="sm" onClick={() => addParam(ruleIndex)} disabled={disabled}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => addParam(ruleIndex)}
+                disabled={disabled}
+              >
                 {t('config_management.visual.payload_rules.add_param')}
               </Button>
             </div>
@@ -665,7 +734,11 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
     updateRule(ruleIndex, { models: rule.models.filter((_, i) => i !== modelIndex) });
   };
 
-  const updateModel = (ruleIndex: number, modelIndex: number, patch: Partial<PayloadModelEntry>) => {
+  const updateModel = (
+    ruleIndex: number,
+    modelIndex: number,
+    patch: Partial<PayloadModelEntry>
+  ) => {
     const rule = rules[ruleIndex];
     updateRule(ruleIndex, {
       models: rule.models.map((m, i) => (i === modelIndex ? { ...m, ...patch } : m)),
@@ -695,14 +768,23 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
               flexWrap: 'wrap',
             }}
           >
-            <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{t('config_management.visual.payload_rules.rule')} {ruleIndex + 1}</div>
-            <Button variant="ghost" size="sm" onClick={() => removeRule(ruleIndex)} disabled={disabled}>
+            <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+              {t('config_management.visual.payload_rules.rule')} {ruleIndex + 1}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => removeRule(ruleIndex)}
+              disabled={disabled}
+            >
               {t('config_management.visual.common.delete')}
             </Button>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('config_management.visual.payload_rules.models')}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              {t('config_management.visual.payload_rules.models')}
+            </div>
             {rule.models.map((model, modelIndex) => (
               <div key={model.id} className={styles.payloadFilterModelRow}>
                 <input
@@ -736,14 +818,21 @@ export const PayloadFilterRulesEditor = memo(function PayloadFilterRulesEditor({
               </div>
             ))}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="secondary" size="sm" onClick={() => addModel(ruleIndex)} disabled={disabled}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => addModel(ruleIndex)}
+                disabled={disabled}
+              >
                 {t('config_management.visual.payload_rules.add_model')}
               </Button>
             </div>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('config_management.visual.payload_rules.remove_params')}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              {t('config_management.visual.payload_rules.remove_params')}
+            </div>
             <StringListEditor
               value={rule.params}
               disabled={disabled}
