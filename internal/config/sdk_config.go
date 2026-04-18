@@ -66,6 +66,11 @@ type SDKConfig struct {
 	// Each YAML entry may be a plain string or an object with "api-key" and optional "name" fields.
 	APIKeys FlexAPIKeyList `yaml:"api-keys" json:"api-keys"`
 
+	// APIKeyAuthBindings maps client API key strings to their bound auth_index.
+	// Populated at load time from object entries in api-keys that include an auth_index field.
+	// Not written to YAML; used at runtime to build the account-bind routing table.
+	APIKeyAuthBindings map[string]string `yaml:"-" json:"-"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`

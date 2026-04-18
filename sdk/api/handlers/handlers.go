@@ -57,6 +57,7 @@ const (
 type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
+type boundAuthIndexContextKey struct{}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
 func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
@@ -79,6 +80,19 @@ func WithSelectedAuthIDCallback(ctx context.Context, callback func(string)) cont
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, selectedAuthCallbackContextKey{}, callback)
+}
+
+// WithBoundAuthIndex returns a child context that constrains auth selection to
+// the account whose auth_index matches idx. Used by the account-bind middleware.
+func WithBoundAuthIndex(ctx context.Context, idx string) context.Context {
+	idx = strings.TrimSpace(idx)
+	if idx == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, boundAuthIndexContextKey{}, idx)
 }
 
 // WithExecutionSessionID returns a child context tagged with a long-lived execution session ID.
@@ -210,6 +224,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
 	}
+	if boundAuthIndex := boundAuthIndexFromContext(ctx); boundAuthIndex != "" {
+		meta[coreexecutor.BoundAuthIndexMetadataKey] = boundAuthIndex
+	}
 	return meta
 }
 
@@ -244,6 +261,21 @@ func executionSessionIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	raw := ctx.Value(executionSessionContextKey{})
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		return ""
+	}
+}
+
+func boundAuthIndexFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(boundAuthIndexContextKey{})
 	switch v := raw.(type) {
 	case string:
 		return strings.TrimSpace(v)

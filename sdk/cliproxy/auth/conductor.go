@@ -1587,6 +1587,24 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	}
 }
 
+func boundAuthIndexFromMetadata(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	raw, ok := meta[cliproxyexecutor.BoundAuthIndexMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch val := raw.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case []byte:
+		return strings.TrimSpace(string(val))
+	default:
+		return ""
+	}
+}
+
 func publishSelectedAuthMetadata(meta map[string]any, authID string) {
 	if len(meta) == 0 {
 		return
@@ -2740,6 +2758,7 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	boundAuthIdx := boundAuthIndexFromMetadata(opts.Metadata)
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -2764,6 +2783,12 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
+		if boundAuthIdx != "" {
+			candidate.EnsureIndex()
+			if candidate.Index != boundAuthIdx {
+				continue
+			}
+		}
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
@@ -2774,6 +2799,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if boundAuthIdx != "" {
+			return nil, nil, &Error{Code: "auth_not_found", Message: "bound account " + boundAuthIdx + " unavailable for provider " + provider}
+		}
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
@@ -2804,7 +2832,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	if !m.useSchedulerFastPath() {
+	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -2852,6 +2880,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	boundAuthIdx := boundAuthIndexFromMetadata(opts.Metadata)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -2883,6 +2912,12 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
+		if boundAuthIdx != "" {
+			candidate.EnsureIndex()
+			if candidate.Index != boundAuthIdx {
+				continue
+			}
+		}
 		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
 		if providerKey == "" {
 			continue
@@ -2903,6 +2938,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if boundAuthIdx != "" {
+			return nil, nil, "", &Error{Code: "auth_not_found", Message: "bound account " + boundAuthIdx + " unavailable for mixed providers"}
+		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
@@ -2939,7 +2977,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	if !m.useSchedulerFastPath() {
+	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

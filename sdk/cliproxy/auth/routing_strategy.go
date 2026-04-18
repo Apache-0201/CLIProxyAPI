@@ -9,6 +9,10 @@ const (
 	RoutingStrategyFillFirst = "fill-first"
 	// RoutingStrategySequentialFill sticks to the current credential until it becomes unavailable.
 	RoutingStrategySequentialFill = "sequential-fill"
+	// RoutingStrategyAccountBind pins each client API key to a specific auth account via auth_index.
+	// The binding is resolved by a middleware layer before auth selection; the selector itself
+	// receives an already-filtered candidate list and uses round-robin within that set.
+	RoutingStrategyAccountBind = "account-bind"
 )
 
 // NormalizeRoutingStrategy canonicalizes supported routing strategy names and aliases.
@@ -20,6 +24,8 @@ func NormalizeRoutingStrategy(strategy string) (string, bool) {
 		return RoutingStrategyFillFirst, true
 	case RoutingStrategySequentialFill, "sequentialfill", "sf":
 		return RoutingStrategySequentialFill, true
+	case RoutingStrategyAccountBind, "accountbind", "ab":
+		return RoutingStrategyAccountBind, true
 	default:
 		return "", false
 	}

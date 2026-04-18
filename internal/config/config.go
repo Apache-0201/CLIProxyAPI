@@ -217,8 +217,12 @@ type QuotaExceeded struct {
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "fill-first", "sequential-fill" ("sf").
+	// Supported values: "round-robin" (default), "fill-first", "sequential-fill" ("sf"), "account-bind".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// DefaultModelAccount is the auth_index used for client API keys that have no explicit
+	// binding when strategy is "account-bind". Leave empty to require per-key bindings.
+	DefaultModelAccount string `yaml:"default-model-account,omitempty" json:"default-model-account,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -610,6 +614,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat)
 		cfg.migrateLegacyAmpConfig(&legacy)
 	}
+
+	// Extract account-bind auth_index bindings from object-form api-keys entries.
+	cfg.APIKeyAuthBindings = extractAPIKeyAuthBindings(data)
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
@@ -1899,4 +1906,52 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+// extractAPIKeyAuthBindings walks the raw YAML to collect auth_index values from
+// object-form api-keys entries. Returns nil when no bindings are present.
+func extractAPIKeyAuthBindings(data []byte) map[string]string {
+	if len(data) == 0 {
+		return nil
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i].Value != "api-keys" {
+			continue
+		}
+		seq := doc.Content[i+1]
+		if seq.Kind != yaml.SequenceNode {
+			return nil
+		}
+		bindings := make(map[string]string, len(seq.Content))
+		for _, item := range seq.Content {
+			if item.Kind != yaml.MappingNode {
+				continue
+			}
+			var entry struct {
+				Key       string `yaml:"api-key"`
+				AuthIndex string `yaml:"auth_index"`
+			}
+			if err := item.Decode(&entry); err != nil {
+				continue
+			}
+			k := strings.TrimSpace(entry.Key)
+			v := strings.TrimSpace(entry.AuthIndex)
+			if k != "" && v != "" {
+				bindings[k] = v
+			}
+		}
+		if len(bindings) > 0 {
+			return bindings
+		}
+		return nil
+	}
+	return nil
 }

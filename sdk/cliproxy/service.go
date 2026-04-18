@@ -89,6 +89,17 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// bindingMu protects bindingMap and defaultBoundAuthIndex.
+	bindingMu sync.RWMutex
+
+	// bindingMap maps client API key strings to their bound auth_index.
+	// Non-nil only when routing.strategy is "account-bind".
+	bindingMap map[string]string
+
+	// defaultBoundAuthIndex is the fallback auth_index when a client API key
+	// has no explicit binding (routing.default-model-account).
+	defaultBoundAuthIndex string
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -350,6 +361,45 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval, cfg.MaxRetryCredentials)
 }
 
+// rebuildBindingMap atomically replaces the account-bind routing table from cfg.
+// Clears the map when the strategy is not "account-bind".
+func (s *Service) rebuildBindingMap(cfg *config.Config) {
+	if s == nil || cfg == nil {
+		return
+	}
+	strategy, _ := coreauth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	s.bindingMu.Lock()
+	defer s.bindingMu.Unlock()
+	if strategy != coreauth.RoutingStrategyAccountBind {
+		s.bindingMap = nil
+		s.defaultBoundAuthIndex = ""
+		return
+	}
+	s.bindingMap = cfg.APIKeyAuthBindings // may be nil; that is fine
+	s.defaultBoundAuthIndex = strings.TrimSpace(cfg.Routing.DefaultModelAccount)
+}
+
+// LookupBoundAuthIndex returns the auth_index for the given client API key.
+// Falls back to the default-model-account when no explicit binding exists.
+// Returns ("", false) when account-bind is not active or no binding is found.
+func (s *Service) LookupBoundAuthIndex(clientKey string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	clientKey = strings.TrimSpace(clientKey)
+	s.bindingMu.RLock()
+	defer s.bindingMu.RUnlock()
+	if s.bindingMap != nil {
+		if idx, ok := s.bindingMap[clientKey]; ok && idx != "" {
+			return idx, true
+		}
+	}
+	if s.defaultBoundAuthIndex != "" {
+		return s.defaultBoundAuthIndex, true
+	}
+	return "", false
+}
+
 func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {
 	if a == nil {
 		return "", "", false
@@ -508,6 +558,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.applyRetryConfig(s.cfg)
+	s.rebuildBindingMap(s.cfg)
 
 	if s.coreManager != nil {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
@@ -647,8 +698,10 @@ func (s *Service) Run(ctx context.Context) error {
 
 		s.applyRetryConfig(newCfg)
 		s.applyPprofConfig(newCfg)
+		s.rebuildBindingMap(newCfg)
 		if s.server != nil {
 			s.server.UpdateClients(newCfg)
+			s.server.UpdateBindingConfig(newCfg)
 		}
 		s.cfgMu.Lock()
 		s.cfg = newCfg

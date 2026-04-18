@@ -177,6 +177,13 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	// bindingMu protects bindingMap and defaultBoundAuthIndex.
+	bindingMu sync.RWMutex
+	// bindingMap maps client API key strings to their bound auth_index.
+	// Non-nil only when routing.strategy is "account-bind".
+	bindingMap            map[string]string
+	defaultBoundAuthIndex string
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -256,6 +263,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
+	s.UpdateBindingConfig(cfg)
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
@@ -334,6 +342,7 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(s.accountBindMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -348,6 +357,7 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(s.accountBindMiddleware())
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -1045,6 +1055,66 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 		return
 	}
 	s.wsAuthChanged = fn
+}
+
+// UpdateBindingConfig atomically replaces the account-bind routing table in the server.
+// Called on every config reload alongside UpdateClients.
+func (s *Server) UpdateBindingConfig(cfg *config.Config) {
+	if s == nil || cfg == nil {
+		return
+	}
+	strategy, _ := auth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	s.bindingMu.Lock()
+	defer s.bindingMu.Unlock()
+	if strategy != auth.RoutingStrategyAccountBind {
+		s.bindingMap = nil
+		s.defaultBoundAuthIndex = ""
+		return
+	}
+	s.bindingMap = cfg.APIKeyAuthBindings
+	s.defaultBoundAuthIndex = strings.TrimSpace(cfg.Routing.DefaultModelAccount)
+}
+
+// accountBindMiddleware resolves the bound auth_index for the client API key and
+// injects it into the request context when routing.strategy is "account-bind".
+// Requests without a resolvable auth_index are rejected immediately.
+func (s *Server) accountBindMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		s.bindingMu.RLock()
+		bindingMap := s.bindingMap
+		defaultIdx := s.defaultBoundAuthIndex
+		s.bindingMu.RUnlock()
+
+		// Middleware is a no-op when account-bind is not active.
+		if bindingMap == nil && defaultIdx == "" {
+			c.Next()
+			return
+		}
+
+		clientKey := ""
+		if raw, ok := c.Get("apiKey"); ok {
+			clientKey, _ = raw.(string)
+		}
+		clientKey = strings.TrimSpace(clientKey)
+
+		authIdx := ""
+		if clientKey != "" {
+			authIdx = bindingMap[clientKey]
+		}
+		if authIdx == "" {
+			authIdx = defaultIdx
+		}
+		if authIdx == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": "account-bind: no auth_index bound for this API key and no default-model-account configured",
+			})
+			return
+		}
+
+		ctx := handlers.WithBoundAuthIndex(c.Request.Context(), authIdx)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
 }
 
 // (management handlers moved to internal/api/handlers/management)
