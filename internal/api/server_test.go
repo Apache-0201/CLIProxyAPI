@@ -14,6 +14,7 @@ import (
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	sdkapi "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -281,5 +282,99 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+// TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy guards against
+// the regression where per-key auth_index bindings were silently ignored unless the global
+// routing.strategy was set to "account-bind". Users who want a single api-key pinned to a
+// specific account while keeping round-robin for other keys rely on this behavior.
+func TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy(t *testing.T) {
+	const (
+		clientKey = "sk-apache-0i6G7JPCeBwOVSqbF"
+		boundIdx  = "2a2d14935e2bcab3"
+	)
+
+	s := newTestServer(t)
+
+	// routing.strategy stays at the default (round-robin). Per-key binding must still apply.
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys:            sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthBindings: map[string]string{clientKey: boundIdx},
+		},
+	}
+	s.UpdateBindingConfig(cfg)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", clientKey)
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("middleware should not abort when per-key binding resolves; status=%d", c.Writer.Status())
+	}
+	got := sdkapi.BoundAuthIndexFromContext(c.Request.Context())
+	if got != boundIdx {
+		t.Fatalf("per-key binding not injected: got %q, want %q", got, boundIdx)
+	}
+}
+
+// TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict verifies that client keys
+// without a per-key binding are not rejected when the global strategy is not "account-bind".
+func TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict(t *testing.T) {
+	s := newTestServer(t)
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys:            sdkconfig.FlexAPIKeyList{"sk-bound", "sk-unbound"},
+			APIKeyAuthBindings: map[string]string{"sk-bound": "idx-A"},
+		},
+	}
+	s.UpdateBindingConfig(cfg)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", "sk-unbound")
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("unbound key must pass through when strict mode is off; status=%d", c.Writer.Status())
+	}
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
+		t.Fatalf("unbound key must not carry a bound auth_index; got %q", got)
+	}
+}
+
+// TestAccountBindMiddleware_StrictModeRejectsUnboundKey verifies that strict "account-bind"
+// mode still rejects client keys without a binding or default-model-account.
+func TestAccountBindMiddleware_StrictModeRejectsUnboundKey(t *testing.T) {
+	s := newTestServer(t)
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{"sk-orphan"},
+		},
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+	s.UpdateBindingConfig(cfg)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", "sk-orphan")
+
+	s.accountBindMiddleware()(c)
+
+	if !c.IsAborted() {
+		t.Fatalf("strict mode must reject unbound keys")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("strict rejection should be 400, got %d", rec.Code)
 	}
 }

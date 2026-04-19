@@ -286,6 +286,12 @@ func boundAuthIndexFromContext(ctx context.Context) string {
 	}
 }
 
+// BoundAuthIndexFromContext exposes the bound auth_index (if any) for tests and
+// integrations that need to verify account-bind middleware wiring.
+func BoundAuthIndexFromContext(ctx context.Context) string {
+	return boundAuthIndexFromContext(ctx)
+}
+
 // BaseAPIHandler contains the handlers for API endpoints.
 // It holds a pool of clients to interact with the backend service and manages
 // load balancing, client selection, and configuration.
