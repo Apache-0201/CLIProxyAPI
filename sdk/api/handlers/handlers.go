@@ -372,6 +372,11 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
+	if requestCtx != nil {
+		if boundIdx := boundAuthIndexFromContext(requestCtx); boundIdx != "" {
+			parentCtx = WithBoundAuthIndex(parentCtx, boundIdx)
+		}
+	}
 	newCtx, cancel := context.WithCancel(parentCtx)
 	cancelCtx := newCtx
 	if requestCtx != nil && requestCtx != parentCtx {
