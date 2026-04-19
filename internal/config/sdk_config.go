@@ -71,6 +71,10 @@ type SDKConfig struct {
 	// Not written to YAML; used at runtime to build the account-bind routing table.
 	APIKeyAuthBindings map[string]string `yaml:"-" json:"-"`
 
+	// APIKeyAuthIdentityBindings maps client API key strings to durable credential identities.
+	// Unlike auth_index, auth_identity must survive auth file rewrites and quota refreshes.
+	APIKeyAuthIdentityBindings map[string]string `yaml:"-" json:"-"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`

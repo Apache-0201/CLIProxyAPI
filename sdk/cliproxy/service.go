@@ -369,11 +369,21 @@ func (s *Service) rebuildBindingMap(cfg *config.Config) {
 		return
 	}
 	strategy, _ := coreauth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	var auths []*coreauth.Auth
+	if s.coreManager != nil {
+		auths = s.coreManager.List()
+	}
+	bindingMap, defaultBoundAuthIndex := coreauth.ResolveBindingIndexes(
+		auths,
+		cfg.APIKeyAuthBindings,
+		cfg.APIKeyAuthIdentityBindings,
+		cfg.Routing.DefaultModelAccount,
+	)
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
-	s.bindingMap = cfg.APIKeyAuthBindings // may be nil; that is fine
+	s.bindingMap = bindingMap // may be nil; that is fine
 	if strategy == coreauth.RoutingStrategyAccountBind {
-		s.defaultBoundAuthIndex = strings.TrimSpace(cfg.Routing.DefaultModelAccount)
+		s.defaultBoundAuthIndex = defaultBoundAuthIndex
 		return
 	}
 	s.defaultBoundAuthIndex = ""
@@ -564,6 +574,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
+		s.rebuildBindingMap(s.cfg)
 	}
 
 	tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)

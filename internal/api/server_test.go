@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,8 +16,8 @@ import (
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	sdkapi "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	sdkapi "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -322,6 +324,65 @@ func TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy(t 
 	}
 }
 
+func TestAccountBindMiddleware_AuthIdentityBindingResolvesCurrentAuthIndex(t *testing.T) {
+	const clientKey = "sk-client"
+
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-stable",
+			},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	registered, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-codex",
+		Provider: "codex",
+		FileName: "codex-after-refresh.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-stable"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	if registered.Index == "" {
+		t.Fatalf("registered auth_index must not be empty")
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+	s.UpdateBindingConfig(cfg)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", clientKey)
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("middleware should not abort when auth_identity resolves; status=%d", c.Writer.Status())
+	}
+	got := sdkapi.BoundAuthIndexFromContext(c.Request.Context())
+	if got != registered.Index {
+		t.Fatalf("auth_identity binding resolved to %q, want current auth_index %q", got, registered.Index)
+	}
+}
+
 // TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict verifies that client keys
 // without a per-key binding are not rejected when the global strategy is not "account-bind".
 func TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict(t *testing.T) {
@@ -377,4 +438,22 @@ func TestAccountBindMiddleware_StrictModeRejectsUnboundKey(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("strict rejection should be 400, got %d", rec.Code)
 	}
+}
+
+func testCodexJWT(t *testing.T, accountID string) string {
+	t.Helper()
+
+	header, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal JWT header: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal JWT payload: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

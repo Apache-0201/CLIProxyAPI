@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"testing"
+)
 
 func TestToolPrefixDisabled(t *testing.T) {
 	var a *Auth
@@ -95,4 +99,60 @@ func TestEnsureIndexUsesCredentialIdentity(t *testing.T) {
 	if geminiIndex == duplicateIndex {
 		t.Fatalf("duplicate config entries should be separated by source-derived seed, got %q", geminiIndex)
 	}
+}
+
+func TestStableIdentityUsesCodexChatGPTAccountID(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "codex",
+		FileName: "codex-apache777@foxmail.com-pro.json",
+		Metadata: map[string]any{
+			"id_token": testJWT(t, map[string]any{
+				"email": "apache777@foxmail.com",
+				"https://api.openai.com/auth": map[string]any{
+					"chatgpt_account_id": "2fdb860f-9028-4f92-be37-195478c9cf8a",
+				},
+			}),
+		},
+	}
+
+	got := auth.StableIdentity()
+	want := "codex:chatgpt:2fdb860f-9028-4f92-be37-195478c9cf8a"
+	if got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+}
+
+func TestStableIdentityDoesNotFollowCodexFileName(t *testing.T) {
+	t.Parallel()
+
+	token := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "acct-stable",
+		},
+	})
+	before := &Auth{Provider: "codex", FileName: "codex-old.json", Metadata: map[string]any{"id_token": token}}
+	after := &Auth{Provider: "codex", FileName: "codex-new.json", Metadata: map[string]any{"id_token": token}}
+
+	if before.EnsureIndex() == after.EnsureIndex() {
+		t.Fatalf("test setup must use file names that produce different auth_index values")
+	}
+	if before.StableIdentity() != after.StableIdentity() {
+		t.Fatalf("same Codex account must keep one stable identity across file name changes: before=%q after=%q", before.StableIdentity(), after.StableIdentity())
+	}
+}
+
+func testJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+
+	header, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal JWT header: %v", err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal JWT payload: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

@@ -390,6 +390,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"source":         "memory",
 		"size":           int64(0),
 	}
+	if identity := strings.TrimSpace(auth.StableIdentity()); identity != "" {
+		entry["auth_identity"] = identity
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}

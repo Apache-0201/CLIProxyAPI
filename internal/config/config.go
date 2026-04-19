@@ -615,8 +615,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.migrateLegacyAmpConfig(&legacy)
 	}
 
-	// Extract account-bind auth_index bindings from object-form api-keys entries.
-	cfg.APIKeyAuthBindings = extractAPIKeyAuthBindings(data)
+	// Extract account-bind bindings from object-form api-keys entries.
+	authIndexBindings, authIdentityBindings := extractAPIKeyAuthBindingRefs(data)
+	cfg.APIKeyAuthBindings = authIndexBindings
+	cfg.APIKeyAuthIdentityBindings = authIdentityBindings
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
@@ -1908,19 +1910,17 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 	removeMapKey(root, "auth")
 }
 
-// extractAPIKeyAuthBindings walks the raw YAML to collect auth_index values from
-// object-form api-keys entries. Returns nil when no bindings are present.
-func extractAPIKeyAuthBindings(data []byte) map[string]string {
+func extractAPIKeyAuthBindingRefs(data []byte) (map[string]string, map[string]string) {
 	if len(data) == 0 {
-		return nil
+		return nil, nil
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) == 0 {
-		return nil
+		return nil, nil
 	}
 	doc := root.Content[0]
 	if doc.Kind != yaml.MappingNode {
-		return nil
+		return nil, nil
 	}
 	for i := 0; i+1 < len(doc.Content); i += 2 {
 		if doc.Content[i].Value != "api-keys" {
@@ -1928,30 +1928,54 @@ func extractAPIKeyAuthBindings(data []byte) map[string]string {
 		}
 		seq := doc.Content[i+1]
 		if seq.Kind != yaml.SequenceNode {
-			return nil
+			return nil, nil
 		}
-		bindings := make(map[string]string, len(seq.Content))
+		indexBindings := make(map[string]string, len(seq.Content))
+		identityBindings := make(map[string]string, len(seq.Content))
 		for _, item := range seq.Content {
 			if item.Kind != yaml.MappingNode {
 				continue
 			}
-			var entry struct {
-				Key       string `yaml:"api-key"`
-				AuthIndex string `yaml:"auth_index"`
-			}
-			if err := item.Decode(&entry); err != nil {
+			key := strings.TrimSpace(mappingScalar(item, "api-key"))
+			if key == "" {
 				continue
 			}
-			k := strings.TrimSpace(entry.Key)
-			v := strings.TrimSpace(entry.AuthIndex)
-			if k != "" && v != "" {
-				bindings[k] = v
+			if authIndex := strings.TrimSpace(mappingScalar(item, "auth_index", "auth-index", "authIndex")); authIndex != "" {
+				indexBindings[key] = authIndex
+			}
+			if authIdentity := strings.TrimSpace(mappingScalar(item, "auth_identity", "auth-identity", "authIdentity")); authIdentity != "" {
+				identityBindings[key] = authIdentity
 			}
 		}
-		if len(bindings) > 0 {
-			return bindings
+		if len(indexBindings) == 0 {
+			indexBindings = nil
 		}
-		return nil
+		if len(identityBindings) == 0 {
+			identityBindings = nil
+		}
+		return indexBindings, identityBindings
 	}
-	return nil
+	return nil, nil
+}
+
+func mappingScalar(node *yaml.Node, names ...string) string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return ""
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key == nil || key.Kind != yaml.ScalarNode {
+			continue
+		}
+		for _, name := range names {
+			if key.Value == name {
+				value := node.Content[i+1]
+				if value != nil && value.Kind == yaml.ScalarNode {
+					return value.Value
+				}
+				return ""
+			}
+		}
+	}
+	return ""
 }

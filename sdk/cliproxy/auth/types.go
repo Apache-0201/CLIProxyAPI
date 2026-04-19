@@ -13,6 +13,7 @@ import (
 	"time"
 
 	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
+	codexauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 )
 
 // PostAuthHook defines a function that is called after an Auth record is created
@@ -213,6 +214,43 @@ func (a *Auth) indexSeed() string {
 	}
 
 	return ""
+}
+
+// StableIdentity returns the durable account identity used for persisted bindings.
+// It must not depend on file names or runtime auth_index values.
+func (a *Auth) StableIdentity() string {
+	if a == nil {
+		return ""
+	}
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	if provider == "" && a.Attributes != nil {
+		provider = strings.ToLower(strings.TrimSpace(a.Attributes["provider_key"]))
+	}
+	if provider == "codex" {
+		if accountID := strings.TrimSpace(a.codexChatGPTAccountID()); accountID != "" {
+			return "codex:chatgpt:" + accountID
+		}
+	}
+	return ""
+}
+
+func (a *Auth) codexChatGPTAccountID() string {
+	if a == nil || a.Metadata == nil {
+		return ""
+	}
+	raw, ok := a.Metadata["id_token"]
+	if !ok {
+		return ""
+	}
+	token, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	claims, err := codexauth.ParseJWTToken(token)
+	if err != nil || claims == nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
 }
 
 // EnsureIndex returns a stable index derived from the auth file name or credential identity.

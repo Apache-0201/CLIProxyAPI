@@ -128,7 +128,8 @@ type Server struct {
 	server *http.Server
 
 	// handlers contains the API handlers for processing requests.
-	handlers *handlers.BaseAPIHandler
+	handlers    *handlers.BaseAPIHandler
+	authManager *auth.Manager
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
@@ -255,6 +256,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s := &Server{
 		engine:              engine,
 		handlers:            handlers.NewBaseAPIHandlers(&cfg.SDKConfig, authManager),
+		authManager:         authManager,
 		cfg:                 cfg,
 		accessManager:       accessManager,
 		requestLogger:       requestLogger,
@@ -1073,12 +1075,22 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 		return
 	}
 	strategy, _ := auth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	var auths []*auth.Auth
+	if s.authManager != nil {
+		auths = s.authManager.List()
+	}
+	bindingMap, defaultBoundAuthIndex := auth.ResolveBindingIndexes(
+		auths,
+		cfg.APIKeyAuthBindings,
+		cfg.APIKeyAuthIdentityBindings,
+		cfg.Routing.DefaultModelAccount,
+	)
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
-	s.bindingMap = cfg.APIKeyAuthBindings // may be nil
+	s.bindingMap = bindingMap // may be nil
 	if strategy == auth.RoutingStrategyAccountBind {
 		s.strictBinding = true
-		s.defaultBoundAuthIndex = strings.TrimSpace(cfg.Routing.DefaultModelAccount)
+		s.defaultBoundAuthIndex = defaultBoundAuthIndex
 		return
 	}
 	s.strictBinding = false
