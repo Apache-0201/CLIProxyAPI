@@ -129,12 +129,9 @@ type monitorModelAggregate struct {
 }
 
 type monitorRequestGroupStats struct {
-	Total          int64
-	Success        int64
-	TotalLatencyMs int64
-	TokPerSecSum   float64
-	TokPerSecCount int64
-	Recent         []monitorRecentRequest
+	Total   int64
+	Success int64
+	Recent  []monitorRecentRequest
 }
 
 // usageSnapshot returns usage snapshot with database+memory data when available.
@@ -201,8 +198,8 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 					TotalTokens:     row.TotalTokens,
 					RequestCount:    groupStats.Total,
 					SuccessRate:     calcRate(groupStats.Success, groupStats.Total),
-					TotalDurationMs: groupStats.TotalLatencyMs,
-					TokensPerSecond: groupStats.AvgTokPerSec,
+					TotalDurationMs: row.LatencyMs,
+					TokensPerSecond: perRequestTokPerSec(row.OutputTokens, row.LatencyMs),
 					RecentRequests:  fromUsageRecentRequests(groupStats.Recent),
 				})
 			}
@@ -233,9 +230,6 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	apiSet := make(map[string]struct{})
 	modelSet := make(map[string]struct{})
 	sourceSet := make(map[string]struct{})
-	latencyByGroup := make(map[string]int64)
-	tokSumByGroup := make(map[string]float64)
-	tokCountByGroup := make(map[string]int64)
 
 	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
 		if !filter.matches(record) {
@@ -250,12 +244,6 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 		if record.Source != "" {
 			sourceSet[record.Source] = struct{}{}
 		}
-		key := requestGroupKey(record.Source, record.Model)
-		latencyByGroup[key] += record.LatencyMs
-		if record.LatencyMs > 0 && record.OutputTokens > 0 {
-			tokSumByGroup[key] += float64(record.OutputTokens) * 1000.0 / float64(record.LatencyMs)
-			tokCountByGroup[key]++
-		}
 		logs = append(logs, monitorRequestLogItem{
 			Timestamp:       record.Timestamp,
 			APIKey:          record.APIKey,
@@ -268,6 +256,8 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			ReasoningTokens: record.ReasoningTokens,
 			CachedTokens:    record.CachedTokens,
 			TotalTokens:     record.TotalTokens,
+			TotalDurationMs: record.LatencyMs,
+			TokensPerSecond: perRequestTokPerSec(record.OutputTokens, record.LatencyMs),
 		})
 	})
 
@@ -280,10 +270,6 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 		stats := requestStats[key]
 		logs[i].RequestCount = stats.Total
 		logs[i].SuccessRate = calcRate(stats.Success, stats.Total)
-		logs[i].TotalDurationMs = latencyByGroup[key]
-		if n := tokCountByGroup[key]; n > 0 {
-			logs[i].TokensPerSecond = tokSumByGroup[key] / float64(n)
-		}
 		logs[i].RecentRequests = copyRecentRequests(stats.Recent)
 	}
 
@@ -1079,6 +1065,13 @@ func calcRate(success, total int64) float64 {
 	}
 	raw := float64(success) * 100 / float64(total)
 	return math.Round(raw*10) / 10
+}
+
+func perRequestTokPerSec(outputTokens, latencyMs int64) float64 {
+	if latencyMs <= 0 || outputTokens <= 0 {
+		return 0
+	}
+	return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
 }
 
 func timePointer(value time.Time) *time.Time {

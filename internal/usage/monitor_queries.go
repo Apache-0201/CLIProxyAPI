@@ -56,15 +56,14 @@ type MonitorRequestLog struct {
 	ReasoningTokens int64
 	CachedTokens    int64
 	TotalTokens     int64
+	LatencyMs       int64
 }
 
 // MonitorRequestGroupStats represents per-channel+model counters for request logs.
 type MonitorRequestGroupStats struct {
-	Total          int64
-	Success        int64
-	TotalLatencyMs int64
-	AvgTokPerSec   float64
-	Recent         []MonitorRecentRequest
+	Total   int64
+	Success int64
+	Recent  []MonitorRecentRequest
 }
 
 // MonitorRequestLogsResult is the SQL-backed result for monitor request logs.
@@ -460,7 +459,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	query := fmt.Sprintf(`
 		SELECT api_key, model, COALESCE(NULLIF(source, ''), 'unknown'), auth_index,
 			failed, requested_at, input_tokens, output_tokens, reasoning_tokens,
-			cached_tokens, total_tokens
+			cached_tokens, total_tokens, COALESCE(latency_ms, 0)
 		FROM usage_records
 		WHERE %s
 		ORDER BY requested_at DESC, id DESC
@@ -495,6 +494,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			&item.ReasoningTokens,
 			&item.CachedTokens,
 			&item.TotalTokens,
+			&item.LatencyMs,
 		); err != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan monitor request logs: %w", err)
 		}
@@ -522,9 +522,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		// Batch query: aggregate counts per (source, model) group
 		batchCountQuery := fmt.Sprintf(`
 			SELECT COALESCE(NULLIF(source, ''), 'unknown'), model,
-				COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(latency_ms), 0),
-				COALESCE(AVG(CASE WHEN latency_ms > 0 AND output_tokens > 0 THEN (output_tokens * 1000.0) / latency_ms END), 0)
+				COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0)
 			FROM usage_records
 			WHERE %s AND (%s)
 			GROUP BY COALESCE(NULLIF(source, ''), 'unknown'), model
@@ -537,14 +535,13 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		defer countRows.Close()
 		for countRows.Next() {
 			var src, mdl string
-			var total2, success, totalLatency int64
-			var avgTokPerSec float64
-			if countErr = countRows.Scan(&src, &mdl, &total2, &success, &totalLatency, &avgTokPerSec); countErr != nil {
+			var total2, success int64
+			if countErr = countRows.Scan(&src, &mdl, &total2, &success); countErr != nil {
 				return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan batch group stats: %w", countErr)
 			}
 			key := MonitorGroupKey(normalizeMonitorSource(src), mdl)
 			if _, exists := groups[key]; exists {
-				groupStats[key] = MonitorRequestGroupStats{Total: total2, Success: success, TotalLatencyMs: totalLatency, AvgTokPerSec: avgTokPerSec}
+				groupStats[key] = MonitorRequestGroupStats{Total: total2, Success: success}
 			}
 		}
 		if countErr = countRows.Err(); countErr != nil {
