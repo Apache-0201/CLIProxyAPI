@@ -33,6 +33,7 @@ type monitorRecord struct {
 	ReasoningTokens int64
 	CachedTokens    int64
 	TotalTokens     int64
+	LatencyMs       int64
 }
 
 type monitorRecordFilter struct {
@@ -69,6 +70,7 @@ type monitorRequestLogItem struct {
 	TotalTokens     int64                  `json:"total_tokens"`
 	RequestCount    int64                  `json:"request_count"`
 	SuccessRate     float64                `json:"success_rate"`
+	TotalDurationMs int64                  `json:"total_duration_ms"`
 	RecentRequests  []monitorRecentRequest `json:"recent_requests"`
 }
 
@@ -126,9 +128,10 @@ type monitorModelAggregate struct {
 }
 
 type monitorRequestGroupStats struct {
-	Total   int64
-	Success int64
-	Recent  []monitorRecentRequest
+	Total           int64
+	Success         int64
+	TotalLatencyMs  int64
+	Recent          []monitorRecentRequest
 }
 
 // usageSnapshot returns usage snapshot with database+memory data when available.
@@ -195,6 +198,7 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 					TotalTokens:     row.TotalTokens,
 					RequestCount:    groupStats.Total,
 					SuccessRate:     calcRate(groupStats.Success, groupStats.Total),
+					TotalDurationMs: groupStats.TotalLatencyMs,
 					RecentRequests:  fromUsageRecentRequests(groupStats.Recent),
 				})
 			}
@@ -225,6 +229,7 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	apiSet := make(map[string]struct{})
 	modelSet := make(map[string]struct{})
 	sourceSet := make(map[string]struct{})
+	latencyByGroup := make(map[string]int64)
 
 	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
 		if !filter.matches(record) {
@@ -239,6 +244,7 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 		if record.Source != "" {
 			sourceSet[record.Source] = struct{}{}
 		}
+		latencyByGroup[requestGroupKey(record.Source, record.Model)] += record.LatencyMs
 		logs = append(logs, monitorRequestLogItem{
 			Timestamp:       record.Timestamp,
 			APIKey:          record.APIKey,
@@ -259,9 +265,11 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	})
 	requestStats := buildRequestGroupStats(logs)
 	for i := range logs {
-		stats := requestStats[requestGroupKey(logs[i].Source, logs[i].Model)]
+		key := requestGroupKey(logs[i].Source, logs[i].Model)
+		stats := requestStats[key]
 		logs[i].RequestCount = stats.Total
 		logs[i].SuccessRate = calcRate(stats.Success, stats.Total)
+		logs[i].TotalDurationMs = latencyByGroup[key]
 		logs[i].RecentRequests = copyRecentRequests(stats.Recent)
 	}
 
@@ -698,6 +706,7 @@ func visitSnapshotRecords(snapshot usage.StatisticsSnapshot, visit func(record m
 					ReasoningTokens: detail.Tokens.ReasoningTokens,
 					CachedTokens:    detail.Tokens.CachedTokens,
 					TotalTokens:     detail.Tokens.TotalTokens,
+					LatencyMs:       detail.LatencyMs,
 				})
 			}
 		}

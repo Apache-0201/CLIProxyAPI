@@ -254,6 +254,7 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 		TotalTokens:     record.Detail.TotalTokens,
 		Method:          method,
 		Path:            path,
+		LatencyMs:       normaliseLatency(record.Latency),
 	}
 
 	p.bufferMu.Lock()
@@ -308,6 +309,7 @@ func (p *DatabasePlugin) ImportRecords(snapshot StatisticsSnapshot) (added, skip
 					ReasoningTokens: detail.Tokens.ReasoningTokens,
 					CachedTokens:    detail.Tokens.CachedTokens,
 					TotalTokens:     detail.Tokens.TotalTokens,
+					LatencyMs:       detail.LatencyMs,
 				})
 			}
 		}
