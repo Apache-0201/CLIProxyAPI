@@ -1076,11 +1076,8 @@ func perRequestTokPerSec(outputTokens, latencyMs, firstTokenLatencyMs int64) flo
 	if firstTokenLatencyMs <= 0 {
 		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
 	}
-	if firstTokenLatencyMs*100 >= latencyMs*80 {
-		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
-	}
 	effectiveLatencyMs := latencyMs - firstTokenLatencyMs
-	if effectiveLatencyMs <= 0 {
+	if effectiveLatencyMs <= 0 || effectiveLatencyMs*100 >= latencyMs*80 {
 		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
 	}
 	return math.Round(float64(outputTokens)*1000.0/float64(effectiveLatencyMs)*10) / 10

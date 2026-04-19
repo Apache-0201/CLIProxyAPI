@@ -16,17 +16,17 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
-func TestPerRequestTokPerSecUsesTotalLatencyWhenTTFTDominates(t *testing.T) {
-	got := perRequestTokPerSec(120, 1000, 850)
+func TestPerRequestTokPerSecUsesTotalLatencyWhenStreamingGapIsLarge(t *testing.T) {
+	got := perRequestTokPerSec(120, 1000, 200)
 	if got != 120 {
 		t.Fatalf("tok/s = %v, want 120", got)
 	}
 }
 
-func TestPerRequestTokPerSecSubtractsTTFTWhenTTFTDoesNotDominate(t *testing.T) {
-	got := perRequestTokPerSec(120, 1000, 200)
-	if got != 150 {
-		t.Fatalf("tok/s = %v, want 150", got)
+func TestPerRequestTokPerSecSubtractsTTFTWhenStreamingGapIsNotLarge(t *testing.T) {
+	got := perRequestTokPerSec(120, 1000, 700)
+	if got != 400 {
+		t.Fatalf("tok/s = %v, want 400", got)
 	}
 }
 
