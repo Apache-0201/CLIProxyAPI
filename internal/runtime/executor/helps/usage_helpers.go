@@ -15,6 +15,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const firstChunkContextKey = "USAGE_FIRST_CHUNK"
+
+type firstChunkLatencyReader interface {
+	Latency() time.Duration
+}
+
 type UsageReporter struct {
 	provider    string
 	model       string
@@ -23,6 +29,7 @@ type UsageReporter struct {
 	apiKey      string
 	source      string
 	requestedAt time.Time
+	firstChunk  firstChunkLatencyReader
 	once        sync.Once
 }
 
@@ -34,6 +41,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		requestedAt: time.Now(),
 		apiKey:      apiKey,
 		source:      resolveUsageSource(auth, apiKey),
+		firstChunk:  firstChunkReaderFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -92,16 +100,17 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool) usage.Reco
 		return usage.Record{Detail: detail, Failed: failed}
 	}
 	return usage.Record{
-		Provider:    r.provider,
-		Model:       r.model,
-		Source:      r.source,
-		APIKey:      r.apiKey,
-		AuthID:      r.authID,
-		AuthIndex:   r.authIndex,
-		RequestedAt: r.requestedAt,
-		Latency:     r.latency(),
-		Failed:      failed,
-		Detail:      detail,
+		Provider:          r.provider,
+		Model:             r.model,
+		Source:            r.source,
+		APIKey:            r.apiKey,
+		AuthID:            r.authID,
+		AuthIndex:         r.authIndex,
+		RequestedAt:       r.requestedAt,
+		Latency:           r.latency(),
+		FirstTokenLatency: firstChunkLatencyFromReporterContext(r),
+		Failed:            failed,
+		Detail:            detail,
 	}
 }
 
@@ -114,6 +123,33 @@ func (r *UsageReporter) latency() time.Duration {
 		return 0
 	}
 	return latency
+}
+
+func firstChunkLatencyFromReporterContext(r *UsageReporter) time.Duration {
+	if r == nil || r.firstChunk == nil {
+		return 0
+	}
+	latency := r.firstChunk.Latency()
+	if latency < 0 {
+		return 0
+	}
+	return latency
+}
+
+func firstChunkReaderFromContext(ctx context.Context) firstChunkLatencyReader {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return nil
+	}
+	value, exists := ginCtx.Get(firstChunkContextKey)
+	if !exists {
+		return nil
+	}
+	reader, _ := value.(firstChunkLatencyReader)
+	return reader
 }
 
 func APIKeyFromContext(ctx context.Context) string {

@@ -22,18 +22,19 @@ const (
 )
 
 type monitorRecord struct {
-	Timestamp       time.Time
-	APIKey          string
-	Model           string
-	Source          string
-	AuthIndex       string
-	Failed          bool
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	CachedTokens    int64
-	TotalTokens     int64
-	LatencyMs       int64
+	Timestamp           time.Time
+	APIKey              string
+	Model               string
+	Source              string
+	AuthIndex           string
+	Failed              bool
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	TotalTokens         int64
+	LatencyMs           int64
+	FirstTokenLatencyMs int64
 }
 
 type monitorRecordFilter struct {
@@ -198,8 +199,8 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 					TotalTokens:     row.TotalTokens,
 					RequestCount:    groupStats.Total,
 					SuccessRate:     calcRate(groupStats.Success, groupStats.Total),
-					TotalDurationMs: row.LatencyMs,
-					TokensPerSecond: perRequestTokPerSec(row.OutputTokens, row.LatencyMs),
+					TotalDurationMs: row.FirstTokenLatencyMs,
+					TokensPerSecond: perRequestTokPerSec(row.OutputTokens, row.LatencyMs, row.FirstTokenLatencyMs),
 					RecentRequests:  fromUsageRecentRequests(groupStats.Recent),
 				})
 			}
@@ -256,8 +257,8 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			ReasoningTokens: record.ReasoningTokens,
 			CachedTokens:    record.CachedTokens,
 			TotalTokens:     record.TotalTokens,
-			TotalDurationMs: record.LatencyMs,
-			TokensPerSecond: perRequestTokPerSec(record.OutputTokens, record.LatencyMs),
+			TotalDurationMs: record.FirstTokenLatencyMs,
+			TokensPerSecond: perRequestTokPerSec(record.OutputTokens, record.LatencyMs, record.FirstTokenLatencyMs),
 		})
 	})
 
@@ -695,18 +696,19 @@ func visitSnapshotRecords(snapshot usage.StatisticsSnapshot, visit func(record m
 					source = "unknown"
 				}
 				visit(monitorRecord{
-					Timestamp:       detail.Timestamp,
-					APIKey:          apiKey,
-					Model:           model,
-					Source:          source,
-					AuthIndex:       detail.AuthIndex,
-					Failed:          detail.Failed,
-					InputTokens:     detail.Tokens.InputTokens,
-					OutputTokens:    detail.Tokens.OutputTokens,
-					ReasoningTokens: detail.Tokens.ReasoningTokens,
-					CachedTokens:    detail.Tokens.CachedTokens,
-					TotalTokens:     detail.Tokens.TotalTokens,
-					LatencyMs:       detail.LatencyMs,
+					Timestamp:           detail.Timestamp,
+					APIKey:              apiKey,
+					Model:               model,
+					Source:              source,
+					AuthIndex:           detail.AuthIndex,
+					Failed:              detail.Failed,
+					InputTokens:         detail.Tokens.InputTokens,
+					OutputTokens:        detail.Tokens.OutputTokens,
+					ReasoningTokens:     detail.Tokens.ReasoningTokens,
+					CachedTokens:        detail.Tokens.CachedTokens,
+					TotalTokens:         detail.Tokens.TotalTokens,
+					LatencyMs:           detail.LatencyMs,
+					FirstTokenLatencyMs: detail.FirstTokenLatencyMs,
 				})
 			}
 		}
@@ -1067,11 +1069,21 @@ func calcRate(success, total int64) float64 {
 	return math.Round(raw*10) / 10
 }
 
-func perRequestTokPerSec(outputTokens, latencyMs int64) float64 {
+func perRequestTokPerSec(outputTokens, latencyMs, firstTokenLatencyMs int64) float64 {
 	if latencyMs <= 0 || outputTokens <= 0 {
 		return 0
 	}
-	return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
+	if firstTokenLatencyMs <= 0 {
+		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
+	}
+	if firstTokenLatencyMs*100 >= latencyMs*80 {
+		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
+	}
+	effectiveLatencyMs := latencyMs - firstTokenLatencyMs
+	if effectiveLatencyMs <= 0 {
+		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
+	}
+	return math.Round(float64(outputTokens)*1000.0/float64(effectiveLatencyMs)*10) / 10
 }
 
 func timePointer(value time.Time) *time.Time {

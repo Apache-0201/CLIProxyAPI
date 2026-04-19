@@ -1,9 +1,12 @@
 package helps
 
 import (
+	"context"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -61,4 +64,28 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
 	}
+}
+
+func TestNewUsageReporterBuildRecordIncludesFirstTokenLatency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	holder := &stubFirstChunkReader{latency: 320 * time.Millisecond}
+	ginCtx.Set("USAGE_FIRST_CHUNK", holder)
+
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.requestedAt = time.Now().Add(-2 * time.Second)
+
+	record := reporter.buildRecord(usage.Detail{OutputTokens: 10}, false)
+	if record.FirstTokenLatency != 320*time.Millisecond {
+		t.Fatalf("first token latency = %v, want %v", record.FirstTokenLatency, 320*time.Millisecond)
+	}
+}
+
+type stubFirstChunkReader struct {
+	latency time.Duration
+}
+
+func (s *stubFirstChunkReader) Latency() time.Duration {
+	return s.latency
 }

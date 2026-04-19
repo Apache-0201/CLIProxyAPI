@@ -121,6 +121,39 @@ func TestExtractWebsocketTimelineUsesOverride(t *testing.T) {
 	}
 }
 
+func TestFirstChunkCaptureMiddlewareStoresLatencyAfterFirstWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Writer = &firstChunkWriter{
+		ResponseWriter: c.Writer,
+		holder:         NewFirstChunkHolder(time.Now().Add(-250 * time.Millisecond)),
+	}
+
+	holder := c.Writer.(*firstChunkWriter).holder
+	if holder.Latency() != 0 {
+		t.Fatalf("initial latency = %v, want 0", holder.Latency())
+	}
+	if _, err := c.Writer.Write([]byte("hello")); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	if holder.Latency() <= 0 {
+		t.Fatalf("latency = %v, want > 0", holder.Latency())
+	}
+}
+
+func TestGetFirstChunkHolderUsesUsageContextKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	holder := NewFirstChunkHolder(time.Now())
+	c.Set(FirstChunkContextKey, holder)
+
+	if got := GetFirstChunkHolder(c); got != holder {
+		t.Fatalf("holder = %p, want %p", got, holder)
+	}
+}
+
 func TestFinalizeStreamingWritesAPIWebsocketTimeline(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

@@ -89,12 +89,13 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp           time.Time  `json:"timestamp"`
+	LatencyMs           int64      `json:"latency_ms"`
+	FirstTokenLatencyMs int64      `json:"first_token_latency_ms"`
+	Source              string     `json:"source"`
+	AuthIndex           string     `json:"auth_index"`
+	Tokens              TokenStats `json:"tokens"`
+	Failed              bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -198,12 +199,13 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		LatencyMs: normaliseLatency(record.Latency),
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
+		Timestamp:           timestamp,
+		LatencyMs:           normaliseLatency(record.Latency),
+		FirstTokenLatencyMs: normaliseLatency(record.FirstTokenLatency),
+		Source:              record.Source,
+		AuthIndex:           record.AuthIndex,
+		Tokens:              detail,
+		Failed:              failed,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -336,6 +338,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				if detail.LatencyMs < 0 {
 					detail.LatencyMs = 0
+				}
+				if detail.FirstTokenLatencyMs < 0 {
+					detail.FirstTokenLatencyMs = 0
 				}
 				if detail.Timestamp.IsZero() {
 					detail.Timestamp = time.Now()

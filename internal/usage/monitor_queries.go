@@ -45,18 +45,19 @@ type MonitorFilterOptions struct {
 
 // MonitorRequestLog represents a single request log row.
 type MonitorRequestLog struct {
-	Timestamp       time.Time
-	APIKey          string
-	Model           string
-	Source          string
-	AuthIndex       string
-	Failed          bool
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	CachedTokens    int64
-	TotalTokens     int64
-	LatencyMs       int64
+	Timestamp           time.Time
+	APIKey              string
+	Model               string
+	Source              string
+	AuthIndex           string
+	Failed              bool
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	TotalTokens         int64
+	LatencyMs           int64
+	FirstTokenLatencyMs int64
 }
 
 // MonitorRequestGroupStats represents per-channel+model counters for request logs.
@@ -459,7 +460,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	query := fmt.Sprintf(`
 		SELECT api_key, model, COALESCE(NULLIF(source, ''), 'unknown'), auth_index,
 			failed, requested_at, input_tokens, output_tokens, reasoning_tokens,
-			cached_tokens, total_tokens, COALESCE(latency_ms, 0)
+			cached_tokens, total_tokens, COALESCE(latency_ms, 0), COALESCE(first_token_latency_ms, 0)
 		FROM usage_records
 		WHERE %s
 		ORDER BY requested_at DESC, id DESC
@@ -495,6 +496,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			&item.CachedTokens,
 			&item.TotalTokens,
 			&item.LatencyMs,
+			&item.FirstTokenLatencyMs,
 		); err != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan monitor request logs: %w", err)
 		}

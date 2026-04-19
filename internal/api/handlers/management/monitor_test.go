@@ -16,15 +16,29 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
+func TestPerRequestTokPerSecUsesTotalLatencyWhenTTFTDominates(t *testing.T) {
+	got := perRequestTokPerSec(120, 1000, 850)
+	if got != 120 {
+		t.Fatalf("tok/s = %v, want 120", got)
+	}
+}
+
+func TestPerRequestTokPerSecSubtractsTTFTWhenTTFTDoesNotDominate(t *testing.T) {
+	got := perRequestTokPerSec(120, 1000, 200)
+	if got != 150 {
+		t.Fatalf("tok/s = %v, want 150", got)
+	}
+}
+
 func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-1", "source-1", false),
-		testUsageRecord(base.Add(-1*time.Hour), "api-1", "model-1", "source-1", true),
-		testUsageRecord(base.Add(-30*time.Minute), "api-1", "model-1", "source-1", false),
-		testUsageRecord(base.Add(-26*time.Hour), "api-2", "model-2", "source-2", false),
+		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-1", "source-1", false, 1000, 250),
+		testUsageRecord(base.Add(-1*time.Hour), "api-1", "model-1", "source-1", true, 1200, 300),
+		testUsageRecord(base.Add(-30*time.Minute), "api-1", "model-1", "source-1", false, 1500, 400),
+		testUsageRecord(base.Add(-26*time.Hour), "api-2", "model-2", "source-2", false, 2000, 500),
 	)
 
 	path := "/monitor/request-logs?start_time=" + url.QueryEscape(base.Add(-2*time.Hour).Format(time.RFC3339)) +
@@ -36,14 +50,15 @@ func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 
 	var resp struct {
 		Items []struct {
-			Timestamp      time.Time `json:"timestamp"`
-			APIKey         string    `json:"api_key"`
-			Model          string    `json:"model"`
-			Source         string    `json:"source"`
-			Failed         bool      `json:"failed"`
-			RequestCount   int64     `json:"request_count"`
-			SuccessRate    float64   `json:"success_rate"`
-			RecentRequests []struct {
+			Timestamp       time.Time `json:"timestamp"`
+			APIKey          string    `json:"api_key"`
+			Model           string    `json:"model"`
+			Source          string    `json:"source"`
+			Failed          bool      `json:"failed"`
+			RequestCount    int64     `json:"request_count"`
+			SuccessRate     float64   `json:"success_rate"`
+			TotalDurationMs int64     `json:"total_duration_ms"`
+			RecentRequests  []struct {
 				Failed bool `json:"failed"`
 			} `json:"recent_requests"`
 		} `json:"items"`
@@ -85,6 +100,9 @@ func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 	if resp.Items[0].SuccessRate != 66.7 {
 		t.Fatalf("unexpected success_rate: got %.1f want 66.7", resp.Items[0].SuccessRate)
 	}
+	if resp.Items[0].TotalDurationMs != 250 {
+		t.Fatalf("unexpected total_duration_ms: got %d want 250", resp.Items[0].TotalDurationMs)
+	}
 	if len(resp.Items[0].RecentRequests) != 3 {
 		t.Fatalf("unexpected recent_requests count: got %d want 3", len(resp.Items[0].RecentRequests))
 	}
@@ -99,10 +117,10 @@ func TestGetMonitorChannelStats_StatusFilterAndAggregate(t *testing.T) {
 
 	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-a", "source-a", false),
-		testUsageRecord(base.Add(-90*time.Minute), "api-1", "model-a", "source-a", true),
-		testUsageRecord(base.Add(-70*time.Minute), "api-2", "model-b", "source-a", false),
-		testUsageRecord(base.Add(-60*time.Minute), "api-1", "model-a", "source-b", false),
+		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-a", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-90*time.Minute), "api-1", "model-a", "source-a", true, 1000, 200),
+		testUsageRecord(base.Add(-70*time.Minute), "api-2", "model-b", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-60*time.Minute), "api-1", "model-a", "source-b", false, 1000, 200),
 	)
 
 	rr := executeMonitorRequest(h.GetMonitorChannelStats, "/monitor/channel-stats?status=failed")
@@ -155,11 +173,11 @@ func TestGetMonitorFailureAnalysis_OnlyFailedSources(t *testing.T) {
 
 	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecord(base.Add(-4*time.Hour), "api-1", "model-a", "source-a", true),
-		testUsageRecord(base.Add(-3*time.Hour), "api-1", "model-b", "source-a", true),
-		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-b", "source-a", false),
-		testUsageRecord(base.Add(-90*time.Minute), "api-2", "model-c", "source-b", true),
-		testUsageRecord(base.Add(-1*time.Hour), "api-3", "model-c", "source-c", false),
+		testUsageRecord(base.Add(-4*time.Hour), "api-1", "model-a", "source-a", true, 1000, 200),
+		testUsageRecord(base.Add(-3*time.Hour), "api-1", "model-b", "source-a", true, 1000, 200),
+		testUsageRecord(base.Add(-2*time.Hour), "api-1", "model-b", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-90*time.Minute), "api-2", "model-c", "source-b", true, 1000, 200),
+		testUsageRecord(base.Add(-1*time.Hour), "api-3", "model-c", "source-c", false, 1000, 200),
 	)
 
 	rr := executeMonitorRequest(h.GetMonitorFailureAnalysis, "/monitor/failure-analysis?limit=2")
@@ -195,7 +213,7 @@ func TestGetMonitorFailureAnalysis_OnlyFailedSources(t *testing.T) {
 func TestGetMonitorRequestLogs_InvalidTimeRange(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	h := newMonitorTestHandler(testUsageRecord(time.Now(), "api-1", "model-a", "source-a", false))
+	h := newMonitorTestHandler(testUsageRecord(time.Now(), "api-1", "model-a", "source-a", false, 1000, 200))
 	path := "/monitor/request-logs?start_time=2026-02-07T12:00:00Z&end_time=2026-02-06T12:00:00Z"
 	rr := executeMonitorRequest(h.GetMonitorRequestLogs, path)
 	if rr.Code != http.StatusBadRequest {
@@ -211,9 +229,9 @@ func TestGetMonitorRequestLogs_ApiFilterContains(t *testing.T) {
 
 	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecord(base.Add(-3*time.Hour), "abc-111", "model-a", "source-a", false),
-		testUsageRecord(base.Add(-2*time.Hour), "xyz-222", "model-a", "source-a", false),
-		testUsageRecord(base.Add(-1*time.Hour), "abc-333", "model-a", "source-a", true),
+		testUsageRecord(base.Add(-3*time.Hour), "abc-111", "model-a", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-2*time.Hour), "xyz-222", "model-a", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-1*time.Hour), "abc-333", "model-a", "source-a", true, 1000, 200),
 	)
 
 	rr := executeMonitorRequest(h.GetMonitorRequestLogs, "/monitor/request-logs?api_filter=abc")
@@ -321,13 +339,15 @@ func newMonitorTestHandler(records ...coreusage.Record) *Handler {
 	return &Handler{usageStats: stats}
 }
 
-func testUsageRecord(ts time.Time, apiKey, model, source string, failed bool) coreusage.Record {
+func testUsageRecord(ts time.Time, apiKey, model, source string, failed bool, latencyMs, firstTokenLatencyMs int64) coreusage.Record {
 	return coreusage.Record{
-		APIKey:      apiKey,
-		Model:       model,
-		Source:      source,
-		RequestedAt: ts,
-		Failed:      failed,
+		APIKey:            apiKey,
+		Model:             model,
+		Source:            source,
+		RequestedAt:       ts,
+		Latency:           time.Duration(latencyMs) * time.Millisecond,
+		FirstTokenLatency: time.Duration(firstTokenLatencyMs) * time.Millisecond,
+		Failed:            failed,
 		Detail: coreusage.Detail{
 			InputTokens:  10,
 			OutputTokens: 20,
@@ -367,12 +387,12 @@ func TestGetMonitorServiceHealth_BasicBucketing(t *testing.T) {
 
 	h := newMonitorTestHandler(
 		// 30 minutes ago -> block index 670 (near the end)
-		testUsageRecord(now.Add(-30*time.Minute), "api-1", "model-a", "source-a", false),
-		testUsageRecord(now.Add(-30*time.Minute), "api-1", "model-a", "source-a", true),
+		testUsageRecord(now.Add(-30*time.Minute), "api-1", "model-a", "source-a", false, 1000, 200),
+		testUsageRecord(now.Add(-30*time.Minute), "api-1", "model-a", "source-a", true, 1000, 200),
 		// 2 hours ago -> block index ~664
-		testUsageRecord(now.Add(-2*time.Hour), "api-2", "model-b", "source-b", false),
+		testUsageRecord(now.Add(-2*time.Hour), "api-2", "model-b", "source-b", false, 1000, 200),
 		// 8 days ago -> outside the window, should be excluded
-		testUsageRecord(now.Add(-8*24*time.Hour), "api-3", "model-c", "source-c", false),
+		testUsageRecord(now.Add(-8*24*time.Hour), "api-3", "model-c", "source-c", false, 1000, 200),
 	)
 
 	rr := executeMonitorRequest(h.GetMonitorServiceHealth, "/monitor/service-health")
