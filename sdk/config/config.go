@@ -34,7 +34,7 @@ type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type TLS = internalconfig.TLSConfig
 
 const (
-	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
+	DefaultPanelReleaseURL = internalconfig.DefaultPanelReleaseURL
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
