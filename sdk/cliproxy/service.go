@@ -362,13 +362,20 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 }
 
 // rebuildBindingMap atomically replaces the account-bind routing table from cfg.
-// Per-key bindings (api-keys entries with auth_index) are always loaded; the default
-// fallback only applies when routing.strategy is "account-bind".
+// Bindings are active only when routing.strategy is "account-bind".
 func (s *Service) rebuildBindingMap(cfg *config.Config) {
 	if s == nil || cfg == nil {
 		return
 	}
 	strategy, _ := coreauth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	if strategy != coreauth.RoutingStrategyAccountBind {
+		s.bindingMu.Lock()
+		defer s.bindingMu.Unlock()
+		s.bindingMap = nil
+		s.defaultBoundAuthIndex = ""
+		return
+	}
+
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
@@ -382,11 +389,7 @@ func (s *Service) rebuildBindingMap(cfg *config.Config) {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
 	s.bindingMap = bindingMap // may be nil; that is fine
-	if strategy == coreauth.RoutingStrategyAccountBind {
-		s.defaultBoundAuthIndex = defaultBoundAuthIndex
-		return
-	}
-	s.defaultBoundAuthIndex = ""
+	s.defaultBoundAuthIndex = defaultBoundAuthIndex
 }
 
 // LookupBoundAuthIndex returns the auth_index for the given client API key.

@@ -287,11 +287,9 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	}
 }
 
-// TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy guards against
-// the regression where per-key auth_index bindings were silently ignored unless the global
-// routing.strategy was set to "account-bind". Users who want a single api-key pinned to a
-// specific account while keeping round-robin for other keys rely on this behavior.
-func TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy(t *testing.T) {
+// TestAccountBindMiddleware_PerKeyBindingIgnoredWithoutAccountBindStrategy verifies that
+// api-keys auth_index metadata has no runtime effect unless routing.strategy is account-bind.
+func TestAccountBindMiddleware_PerKeyBindingIgnoredWithoutAccountBindStrategy(t *testing.T) {
 	const (
 		clientKey = "sk-apache-0i6G7JPCeBwOVSqbF"
 		boundIdx  = "2a2d14935e2bcab3"
@@ -299,7 +297,7 @@ func TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy(t 
 
 	s := newTestServer(t)
 
-	// routing.strategy stays at the default (round-robin). Per-key binding must still apply.
+	// routing.strategy stays at the default (round-robin). Per-key binding must not apply.
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
 			APIKeys:            sdkconfig.FlexAPIKeyList{clientKey},
@@ -316,11 +314,10 @@ func TestAccountBindMiddleware_PerKeyBindingAppliesWithoutAccountBindStrategy(t 
 	s.accountBindMiddleware()(c)
 
 	if c.IsAborted() {
-		t.Fatalf("middleware should not abort when per-key binding resolves; status=%d", c.Writer.Status())
+		t.Fatalf("middleware should not abort when account-bind is disabled; status=%d", c.Writer.Status())
 	}
-	got := sdkapi.BoundAuthIndexFromContext(c.Request.Context())
-	if got != boundIdx {
-		t.Fatalf("per-key binding not injected: got %q, want %q", got, boundIdx)
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
+		t.Fatalf("per-key binding must be ignored outside account-bind: got %q", got)
 	}
 }
 
@@ -347,6 +344,7 @@ func TestAccountBindMiddleware_AuthIdentityBindingResolvesCurrentAuthIndex(t *te
 		LoggingToFile:          false,
 		UsageStatisticsEnabled: false,
 		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+		Routing:                proxyconfig.RoutingConfig{Strategy: "account-bind"},
 	}
 
 	authManager := auth.NewManager(nil, nil, nil)
@@ -383,15 +381,42 @@ func TestAccountBindMiddleware_AuthIdentityBindingResolvesCurrentAuthIndex(t *te
 	}
 }
 
-// TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict verifies that client keys
-// without a per-key binding are not rejected when the global strategy is not "account-bind".
-func TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict(t *testing.T) {
+func TestAccountBindMiddleware_DefaultModelAccountIgnoredWithoutAccountBindStrategy(t *testing.T) {
 	s := newTestServer(t)
 
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
-			APIKeys:            sdkconfig.FlexAPIKeyList{"sk-bound", "sk-unbound"},
-			APIKeyAuthBindings: map[string]string{"sk-bound": "idx-A"},
+			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
+		},
+		Routing: proxyconfig.RoutingConfig{DefaultModelAccount: "idx-default"},
+	}
+	s.UpdateBindingConfig(cfg)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", "sk-client")
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("middleware should not abort when account-bind is disabled; status=%d", c.Writer.Status())
+	}
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
+		t.Fatalf("default-model-account must be ignored outside account-bind: got %q", got)
+	}
+}
+
+func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy(t *testing.T) {
+	s := newTestServer(t)
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
+		},
+		Routing: proxyconfig.RoutingConfig{
+			Strategy:            "account-bind",
+			DefaultModelAccount: "idx-default",
 		},
 	}
 	s.UpdateBindingConfig(cfg)
@@ -399,15 +424,15 @@ func TestAccountBindMiddleware_UnboundKeyPassesThroughWhenNotStrict(t *testing.T
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set("apiKey", "sk-unbound")
+	c.Set("apiKey", "sk-client")
 
 	s.accountBindMiddleware()(c)
 
 	if c.IsAborted() {
-		t.Fatalf("unbound key must pass through when strict mode is off; status=%d", c.Writer.Status())
+		t.Fatalf("middleware should not abort when default-model-account resolves; status=%d", c.Writer.Status())
 	}
-	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
-		t.Fatalf("unbound key must not carry a bound auth_index; got %q", got)
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "idx-default" {
+		t.Fatalf("default-model-account not injected: got %q, want %q", got, "idx-default")
 	}
 }
 

@@ -182,11 +182,10 @@ type Server struct {
 	// bindingMu protects bindingMap and defaultBoundAuthIndex.
 	bindingMu sync.RWMutex
 	// bindingMap maps client API key strings to their bound auth_index.
-	// Populated whenever any api-key entry carries an auth_index, regardless of routing strategy.
+	// Non-nil only when routing.strategy is "account-bind".
 	bindingMap            map[string]string
 	defaultBoundAuthIndex string
 	// strictBinding is true when routing.strategy == "account-bind": unbound client keys are rejected.
-	// When false, per-key bindings still apply to keys that have one; others fall through to normal routing.
 	strictBinding bool
 }
 
@@ -1066,15 +1065,22 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 // UpdateBindingConfig atomically replaces the account-bind routing table in the server.
 // Called on every config reload alongside UpdateClients.
 //
-// Per-key bindings (api-keys entries with auth_index) are always loaded, regardless of
-// routing.strategy. When strategy is "account-bind", strictBinding is enabled and unbound
-// client keys are rejected at the middleware; otherwise, unbound keys fall through to the
-// configured routing strategy.
+// Bindings are active only when routing.strategy is "account-bind"; other strategies
+// must not interpret api-keys auth_index/auth_identity metadata.
 func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	if s == nil || cfg == nil {
 		return
 	}
 	strategy, _ := auth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	if strategy != auth.RoutingStrategyAccountBind {
+		s.bindingMu.Lock()
+		defer s.bindingMu.Unlock()
+		s.bindingMap = nil
+		s.defaultBoundAuthIndex = ""
+		s.strictBinding = false
+		return
+	}
+
 	var auths []*auth.Auth
 	if s.authManager != nil {
 		auths = s.authManager.List()
@@ -1088,19 +1094,12 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
 	s.bindingMap = bindingMap // may be nil
-	if strategy == auth.RoutingStrategyAccountBind {
-		s.strictBinding = true
-		s.defaultBoundAuthIndex = defaultBoundAuthIndex
-		return
-	}
-	s.strictBinding = false
-	s.defaultBoundAuthIndex = ""
+	s.defaultBoundAuthIndex = defaultBoundAuthIndex
+	s.strictBinding = true
 }
 
 // accountBindMiddleware resolves the bound auth_index for the client API key and
-// injects it into the request context when a binding exists. Unbound keys are rejected
-// only when routing.strategy is "account-bind" (strict mode); otherwise they pass through
-// to the normal routing strategy.
+// injects it into the request context when account-bind routing is active.
 func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		s.bindingMu.RLock()
