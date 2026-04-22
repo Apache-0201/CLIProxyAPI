@@ -33,13 +33,14 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 		TotalTokens int64            `json:"total_tokens"`
 		Account     map[string]int64 `json:"account_totals"`
 		Items       []struct {
-			APIKey            string  `json:"api_key"`
-			AuthIndex         string  `json:"auth_index"`
-			Requests          int64   `json:"requests"`
-			TotalTokens       int64   `json:"total_tokens"`
-			AccountTokens     int64   `json:"account_tokens"`
-			AccountTokenShare float64 `json:"account_token_share"`
-			TotalTokenShare   float64 `json:"total_token_share"`
+			APIKey            string           `json:"api_key"`
+			AuthIndex         string           `json:"auth_index"`
+			Requests          int64            `json:"requests"`
+			TotalTokens       int64            `json:"total_tokens"`
+			AccountTokens     int64            `json:"account_tokens"`
+			AccountTokenShare float64          `json:"account_token_share"`
+			TotalTokenShare   float64          `json:"total_token_share"`
+			AuthTokens        map[string]int64 `json:"auth_tokens"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -68,6 +69,9 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	}
 	if first.AccountTokenShare != 66.7 || first.TotalTokenShare != 50 {
 		t.Fatalf("unexpected first shares: account=%.1f total=%.1f", first.AccountTokenShare, first.TotalTokenShare)
+	}
+	if first.AuthTokens["auth-1"] != 60 {
+		t.Fatalf("unexpected first auth token breakdown: %+v", first.AuthTokens)
 	}
 }
 

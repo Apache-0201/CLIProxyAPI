@@ -1161,13 +1161,14 @@ type monitorHourlyTokensResponse struct {
 }
 
 type monitorKeyTokenStatsItem struct {
-	APIKey            string  `json:"api_key"`
-	AuthIndex         string  `json:"auth_index"`
-	Requests          int64   `json:"requests"`
-	TotalTokens       int64   `json:"total_tokens"`
-	AccountTokens     int64   `json:"account_tokens"`
-	AccountTokenShare float64 `json:"account_token_share"`
-	TotalTokenShare   float64 `json:"total_token_share"`
+	APIKey            string           `json:"api_key"`
+	AuthIndex         string           `json:"auth_index"`
+	Requests          int64            `json:"requests"`
+	TotalTokens       int64            `json:"total_tokens"`
+	AccountTokens     int64            `json:"account_tokens"`
+	AccountTokenShare float64          `json:"account_token_share"`
+	TotalTokenShare   float64          `json:"total_token_share"`
+	AuthTokens        map[string]int64 `json:"auth_tokens"`
 }
 
 type monitorKeyTokenAcc struct {
@@ -1573,6 +1574,10 @@ func buildMonitorKeyTokenStatsResponse(
 	for _, acc := range keyTotals {
 		authIndex := dominantAuthIndex(acc.AuthTokens)
 		accountTokens := accountTotals[authIndex]
+		authTokens := make(map[string]int64, len(acc.AuthTokens))
+		for account, tokens := range acc.AuthTokens {
+			authTokens[account] = tokens
+		}
 		items = append(items, monitorKeyTokenStatsItem{
 			APIKey:            acc.APIKey,
 			AuthIndex:         authIndex,
@@ -1581,6 +1586,7 @@ func buildMonitorKeyTokenStatsResponse(
 			AccountTokens:     accountTokens,
 			AccountTokenShare: calcRate(acc.AuthTokens[authIndex], accountTokens),
 			TotalTokenShare:   calcRate(acc.TotalTokens, totalTokens),
+			AuthTokens:        authTokens,
 		})
 	}
 
