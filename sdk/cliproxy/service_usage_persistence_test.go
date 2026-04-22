@@ -10,10 +10,8 @@ import (
 )
 
 func TestRun_FailsWhenUsagePersistenceInitFails(t *testing.T) {
-	t.Setenv("PGSTORE_DSN", "postgres://invalid dsn")
-	t.Setenv("pgstore_dsn", "")
-	t.Setenv("PGSTORE_SCHEMA", "")
-	t.Setenv("pgstore_schema", "")
+	t.Setenv("MYSQLSTORE_DSN", "invalid dsn")
+	t.Setenv("mysqlstore_dsn", "")
 
 	tmpDir := t.TempDir()
 	cfg := &config.Config{

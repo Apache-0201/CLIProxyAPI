@@ -266,7 +266,7 @@ func TestGetMonitorRequestLogs_DatabasePluginPath(t *testing.T) {
 	t.Cleanup(usage.CloseDatabasePlugin)
 
 	authDir := t.TempDir()
-	if err := usage.InitDatabasePlugin(context.Background(), "", "", authDir); err != nil {
+	if err := usage.InitDatabasePlugin(context.Background(), "", authDir); err != nil {
 		t.Fatalf("InitDatabasePlugin failed: %v", err)
 	}
 	plugin := usage.GetDatabasePlugin()

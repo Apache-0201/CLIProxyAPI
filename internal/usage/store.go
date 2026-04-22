@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/dbutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	_ "modernc.org/sqlite"
 )
@@ -93,26 +93,43 @@ const (
 )
 
 // NewUsageStore creates a UsageStore based on environment configuration.
-// If pgDSN is provided, it uses PostgreSQL for writes and a local SQLite mirror for reads;
+// If mysqlDSN is provided, it uses MySQL for writes and a local SQLite mirror for reads;
 // otherwise it uses SQLite in authDir directly.
-func NewUsageStore(ctx context.Context, pgDSN, pgSchema, authDir string) (UsageStore, error) {
-	if strings.TrimSpace(pgDSN) != "" {
-		return newMirrorUsageStore(ctx, pgDSN, pgSchema, authDir)
+func NewUsageStore(ctx context.Context, mysqlDSN, authDir string) (UsageStore, error) {
+	if strings.TrimSpace(mysqlDSN) != "" {
+		primary, err := newMySQLUsageStore(ctx, mysqlDSN)
+		if err != nil {
+			return nil, err
+		}
+		return newMirrorUsageStore(ctx, primary, authDir, "mysql")
 	}
 	return newSQLiteUsageStore(authDir)
 }
 
-type mirrorUsageStore struct {
-	primary *pgUsageStore
-	local   *sqliteUsageStore
+// NewPostgresUsageStore creates a PostgreSQL-backed UsageStore with a local SQLite read mirror.
+func NewPostgresUsageStore(ctx context.Context, pgDSN, pgSchema, authDir string) (UsageStore, error) {
+	if strings.TrimSpace(pgDSN) != "" {
+		primary, err := newPgUsageStore(ctx, pgDSN, pgSchema)
+		if err != nil {
+			return nil, err
+		}
+		return newMirrorUsageStore(ctx, primary, authDir, "postgres")
+	}
+	return newSQLiteUsageStore(authDir)
 }
 
-func newMirrorUsageStore(ctx context.Context, pgDSN, pgSchema, authDir string) (*mirrorUsageStore, error) {
-	primary, err := newPgUsageStore(ctx, pgDSN, pgSchema)
-	if err != nil {
-		return nil, err
-	}
+type mirrorPrimaryUsageStore interface {
+	UsageStore
+	ListRecordsAfterID(ctx context.Context, afterID int64, limit int) ([]UsageRecord, int64, error)
+}
 
+type mirrorUsageStore struct {
+	primary mirrorPrimaryUsageStore
+	local   *sqliteUsageStore
+	backend string
+}
+
+func newMirrorUsageStore(ctx context.Context, primary mirrorPrimaryUsageStore, authDir, backend string) (*mirrorUsageStore, error) {
 	localPath := resolveLocalUsageDBPath(authDir)
 	local, err := newSQLiteUsageStoreAtPath(localPath)
 	if err != nil {
@@ -120,7 +137,7 @@ func newMirrorUsageStore(ctx context.Context, pgDSN, pgSchema, authDir string) (
 		return nil, err
 	}
 
-	store := &mirrorUsageStore{primary: primary, local: local}
+	store := &mirrorUsageStore{primary: primary, local: local, backend: backend}
 	if err = store.bootstrapLocalFromPrimary(ctx); err != nil {
 		_ = local.Close()
 		_ = primary.Close()
@@ -131,6 +148,13 @@ func newMirrorUsageStore(ctx context.Context, pgDSN, pgSchema, authDir string) (
 
 func resolveLocalUsageDBPath(authDir string) string {
 	if localPath := util.GetEnvTrimmed("PGSTORE_LOCAL_PATH", "pgstore_local_path"); localPath != "" {
+		cleaned := filepath.Clean(localPath)
+		if strings.EqualFold(filepath.Ext(cleaned), ".db") {
+			return cleaned
+		}
+		return filepath.Join(cleaned, defaultLocalUsageFileName)
+	}
+	if localPath := util.GetEnvTrimmed("MYSQLSTORE_LOCAL_PATH", "mysqlstore_local_path"); localPath != "" {
 		cleaned := filepath.Clean(localPath)
 		if strings.EqualFold(filepath.Ext(cleaned), ".db") {
 			return cleaned
@@ -163,7 +187,7 @@ func (s *mirrorUsageStore) bootstrapLocalFromPrimary(ctx context.Context) error 
 	for {
 		records, newLastID, err := s.primary.ListRecordsAfterID(ctx, lastID, defaultMirrorSyncBatchSize)
 		if err != nil {
-			return fmt.Errorf("usage store: sync records from postgres: %w", err)
+			return fmt.Errorf("usage store: sync records from %s: %w", s.backend, err)
 		}
 		if len(records) == 0 {
 			break
@@ -286,22 +310,29 @@ func (s *mirrorUsageStore) Close() error {
 	return firstErr
 }
 
-// pgUsageStore implements UsageStore using PostgreSQL.
-type pgUsageStore struct {
-	db     *sql.DB
-	schema string
+// mysqlUsageStore implements UsageStore using MySQL.
+type mysqlUsageStore struct {
+	db *sql.DB
 }
 
-func newPgUsageStore(ctx context.Context, dsn, schema string) (*pgUsageStore, error) {
-	db, err := sql.Open("pgx", dsn)
+func normalizeMySQLDSN(dsn string) (string, error) {
+	return dbutil.NormalizeMySQLDSN(dsn)
+}
+
+func newMySQLUsageStore(ctx context.Context, dsn string) (*mysqlUsageStore, error) {
+	normalizedDSN, err := normalizeMySQLDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("usage store: open postgres: %w", err)
+		return nil, fmt.Errorf("usage store: normalize mysql dsn: %w", err)
+	}
+	db, err := sql.Open("mysql", normalizedDSN)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: open mysql: %w", err)
 	}
 	if err = db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("usage store: ping postgres: %w", err)
+		return nil, fmt.Errorf("usage store: ping mysql: %w", err)
 	}
-	store := &pgUsageStore{db: db, schema: strings.TrimSpace(schema)}
+	store := &mysqlUsageStore{db: db}
 	if err = store.EnsureSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -309,111 +340,71 @@ func newPgUsageStore(ctx context.Context, dsn, schema string) (*pgUsageStore, er
 	return store, nil
 }
 
-func (s *pgUsageStore) fullTableName(name string) string {
-	if s.schema == "" {
-		return quoteIdentifier(name)
-	}
-	return quoteIdentifier(s.schema) + "." + quoteIdentifier(name)
+func (s *mysqlUsageStore) fullTableName(name string) string {
+	return quoteIdentifier(name)
 }
 
-func (s *pgUsageStore) fullIndexName(name string) string {
-	if s.schema == "" {
-		return quoteIdentifier(name)
-	}
-	return quoteIdentifier(s.schema) + "." + quoteIdentifier(name)
-}
-
-func (s *pgUsageStore) EnsureSchema(ctx context.Context) error {
-	if s.schema != "" {
-		query := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteIdentifier(s.schema))
-		if _, err := s.db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("usage store: create schema: %w", err)
-		}
-	}
+func (s *mysqlUsageStore) EnsureSchema(ctx context.Context) error {
 	table := s.fullTableName("usage_records")
 	createTable := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id                     BIGSERIAL PRIMARY KEY,
-			api_key                TEXT NOT NULL,
-			model                  TEXT NOT NULL,
-			source                 TEXT,
-			auth_index             TEXT,
-			failed                 INTEGER NOT NULL DEFAULT 0,
-			requested_at           TIMESTAMPTZ NOT NULL,
-			input_tokens           BIGINT NOT NULL DEFAULT 0,
-			output_tokens          BIGINT NOT NULL DEFAULT 0,
-			reasoning_tokens       BIGINT NOT NULL DEFAULT 0,
-			cached_tokens          BIGINT NOT NULL DEFAULT 0,
-			total_tokens           BIGINT NOT NULL DEFAULT 0,
-			first_token_latency_ms BIGINT NOT NULL DEFAULT 0
-		)
-	`, table)
+			CREATE TABLE IF NOT EXISTS %s (
+				id                     bigint unsigned NOT NULL AUTO_INCREMENT,
+				api_key                varchar(255) NOT NULL DEFAULT '',
+				model                  varchar(255) NOT NULL DEFAULT '',
+				source                 varchar(255) NOT NULL DEFAULT '',
+				auth_index             varchar(255) NOT NULL DEFAULT '',
+				failed                 tinyint unsigned NOT NULL DEFAULT 0,
+				requested_at           datetime NOT NULL,
+				input_tokens           bigint unsigned NOT NULL DEFAULT 0,
+				output_tokens          bigint unsigned NOT NULL DEFAULT 0,
+				reasoning_tokens       bigint unsigned NOT NULL DEFAULT 0,
+				cached_tokens          bigint unsigned NOT NULL DEFAULT 0,
+				total_tokens           bigint unsigned NOT NULL DEFAULT 0,
+				method                 varchar(16) NOT NULL DEFAULT '',
+				path                   varchar(2048) NOT NULL DEFAULT '',
+				latency_ms             bigint unsigned NOT NULL DEFAULT 0,
+				first_token_latency_ms bigint unsigned NOT NULL DEFAULT 0,
+				created_at             datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at             datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (id)
+			) DEFAULT CHARACTER SET utf8mb4
+		`, table)
 	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
 		return fmt.Errorf("usage store: create table: %w", err)
 	}
 
 	// Create indexes for common query patterns
 	indexes := []string{
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_requested_at_id ON %s(requested_at DESC, id DESC)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_api_model ON %s(api_key, model)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_failed ON %s(failed) WHERE failed = 1", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_failed_requested_source ON %s(requested_at DESC, source) WHERE failed = 1", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_source_requested_id ON %s(source, requested_at DESC, id DESC)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_source_model_requested_id ON %s(source, model, requested_at DESC, id DESC)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_source_norm_requested ON %s((COALESCE(NULLIF(source, ''), 'unknown')), requested_at DESC)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_source_norm_model_requested ON %s((COALESCE(NULLIF(source, ''), 'unknown')), model, requested_at DESC)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_requested_id ON %s(requested_at, id)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_api_model ON %s(api_key, model)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_failed_requested ON %s(failed, requested_at)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_source_requested ON %s(source, requested_at, id)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_source_model_req ON %s(source, model, requested_at)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_method_requested ON %s(method, requested_at)", table),
+		fmt.Sprintf("CREATE INDEX idx_usage_path_requested ON %s(path(191), requested_at)", table),
 	}
 	for _, idx := range indexes {
 		if _, err := s.db.ExecContext(ctx, idx); err != nil {
-			return fmt.Errorf("usage store: create index: %w", err)
-		}
-	}
-	legacyIndexes := []string{
-		fmt.Sprintf("DROP INDEX IF EXISTS %s", s.fullIndexName("idx_usage_requested_at")),
-		fmt.Sprintf("DROP INDEX IF EXISTS %s", s.fullIndexName("idx_usage_api_key")),
-	}
-	for _, dropStmt := range legacyIndexes {
-		if _, err := s.db.ExecContext(ctx, dropStmt); err != nil {
-			return fmt.Errorf("usage store: drop legacy index: %w", err)
-		}
-	}
-
-	// Migration: add method/path columns for existing databases
-	pgMigrations := []string{
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS method TEXT NOT NULL DEFAULT ''", table),
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS path TEXT NOT NULL DEFAULT ''", table),
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS latency_ms BIGINT NOT NULL DEFAULT 0", table),
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_token_latency_ms BIGINT NOT NULL DEFAULT 0", table),
-	}
-	for _, m := range pgMigrations {
-		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			return fmt.Errorf("usage store: migration: %w", err)
-		}
-	}
-	postMigrationIndexes := []string{
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_method_requested_at ON %s(method, requested_at DESC)", table),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_usage_path_requested_at ON %s(path, requested_at DESC)", table),
-	}
-	for _, idx := range postMigrationIndexes {
-		if _, err := s.db.ExecContext(ctx, idx); err != nil {
-			return fmt.Errorf("usage store: create post migration index: %w", err)
+			if !dbutil.IsMySQLError(err, 1061) {
+				return fmt.Errorf("usage store: create index: %w", err)
+			}
 		}
 	}
 
 	return nil
 }
 
-func (s *pgUsageStore) Insert(ctx context.Context, record UsageRecord) error {
+func (s *mysqlUsageStore) Insert(ctx context.Context, record UsageRecord) error {
 	table := s.fullTableName("usage_records")
 	failed := 0
 	if record.Failed {
 		failed = 1
 	}
 	query := fmt.Sprintf(`
-		INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
-			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
+				input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
+				method, path, latency_ms, first_token_latency_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, table)
 	_, err := s.db.ExecContext(ctx, query,
 		record.APIKey,
@@ -438,7 +429,7 @@ func (s *pgUsageStore) Insert(ctx context.Context, record UsageRecord) error {
 	return nil
 }
 
-func (s *pgUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (added, skipped int64, err error) {
+func (s *mysqlUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (added, skipped int64, err error) {
 	if len(records) == 0 {
 		return 0, 0, nil
 	}
@@ -451,10 +442,10 @@ func (s *pgUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (
 
 	table := s.fullTableName("usage_records")
 	query := fmt.Sprintf(`
-		INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
-			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
+				input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
+				method, path, latency_ms, first_token_latency_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, table)
 
 	stmt, err := tx.PrepareContext(ctx, query)
@@ -498,7 +489,7 @@ func (s *pgUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (
 	return added, skipped, nil
 }
 
-func (s *pgUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, limit int) ([]UsageRecord, int64, error) {
+func (s *mysqlUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, limit int) ([]UsageRecord, int64, error) {
 	if limit <= 0 {
 		limit = defaultMirrorSyncBatchSize
 	}
@@ -514,10 +505,10 @@ func (s *pgUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, li
 		SELECT id, api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
 			method, path, latency_ms, first_token_latency_ms
-		FROM %s
-		WHERE id > $1
-		ORDER BY id ASC
-		LIMIT $2
+			FROM %s
+			WHERE id > ?
+			ORDER BY id ASC
+			LIMIT ?
 	`, table)
 
 	rows, err := s.db.QueryContext(ctx, query, afterID, limit)
@@ -565,7 +556,7 @@ func (s *pgUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, li
 	return records, lastID, nil
 }
 
-func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats, error) {
+func (s *mysqlUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats, error) {
 	stats := AggregatedStats{
 		APIs:           make(map[string]APIStats),
 		RequestsByDay:  make(map[string]int64),
@@ -577,16 +568,21 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 
 	// Total stats
 	queryTotal := fmt.Sprintf(`
-		SELECT COUNT(*),
-			SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),
-			SUM(CASE WHEN failed=1 THEN 1 ELSE 0 END),
-			COALESCE(SUM(total_tokens), 0)
-		FROM %s
-	`, table)
+			SELECT COUNT(*), COALESCE(SUM(total_tokens), 0)
+			FROM %s
+		`, table)
 	if err := s.db.QueryRowContext(ctx, queryTotal).Scan(
-		&stats.TotalRequests, &stats.SuccessCount, &stats.FailureCount, &stats.TotalTokens,
+		&stats.TotalRequests, &stats.TotalTokens,
 	); err != nil && err != sql.ErrNoRows {
 		return stats, fmt.Errorf("usage store: query total stats: %w", err)
+	}
+	querySuccess := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE failed = 0", table)
+	if err := s.db.QueryRowContext(ctx, querySuccess).Scan(&stats.SuccessCount); err != nil && err != sql.ErrNoRows {
+		return stats, fmt.Errorf("usage store: query success count: %w", err)
+	}
+	queryFailure := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE failed = 1", table)
+	if err := s.db.QueryRowContext(ctx, queryFailure).Scan(&stats.FailureCount); err != nil && err != sql.ErrNoRows {
+		return stats, fmt.Errorf("usage store: query failure count: %w", err)
 	}
 
 	// By API key
@@ -633,8 +629,8 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 
 	// By day
 	queryDay := fmt.Sprintf(`
-		SELECT TO_CHAR(requested_at, 'YYYY-MM-DD'), COUNT(*), COALESCE(SUM(total_tokens), 0)
-		FROM %s GROUP BY TO_CHAR(requested_at, 'YYYY-MM-DD')
+			SELECT DATE_FORMAT(requested_at, '%%Y-%%m-%%d'), COUNT(*), COALESCE(SUM(total_tokens), 0)
+			FROM %s GROUP BY DATE_FORMAT(requested_at, '%%Y-%%m-%%d')
 	`, table)
 	rows, err = s.db.QueryContext(ctx, queryDay)
 	if err != nil {
@@ -653,8 +649,8 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 
 	// By hour
 	queryHour := fmt.Sprintf(`
-		SELECT TO_CHAR(requested_at, 'HH24'), COUNT(*), COALESCE(SUM(total_tokens), 0)
-		FROM %s GROUP BY TO_CHAR(requested_at, 'HH24')
+			SELECT DATE_FORMAT(requested_at, '%%H'), COUNT(*), COALESCE(SUM(total_tokens), 0)
+			FROM %s GROUP BY DATE_FORMAT(requested_at, '%%H')
 	`, table)
 	rows, err = s.db.QueryContext(ctx, queryHour)
 	if err != nil {
@@ -677,7 +673,7 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 	return stats, nil
 }
 
-func (s *pgUsageStore) GetDetails(ctx context.Context, offset, limit int) ([]DetailRecord, error) {
+func (s *mysqlUsageStore) GetDetails(ctx context.Context, offset, limit int) ([]DetailRecord, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -690,10 +686,10 @@ func (s *pgUsageStore) GetDetails(ctx context.Context, offset, limit int) ([]Det
 
 	table := s.fullTableName("usage_records")
 	query := fmt.Sprintf(`
-		SELECT api_key, model, source, auth_index, failed, requested_at,
-			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens
-		FROM %s ORDER BY requested_at DESC
-		LIMIT $1 OFFSET $2
+			SELECT api_key, model, source, auth_index, failed, requested_at,
+				input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens
+			FROM %s ORDER BY requested_at DESC
+			LIMIT ? OFFSET ?
 	`, table)
 
 	rows, err := s.db.QueryContext(ctx, query, limit, offset)
@@ -721,13 +717,13 @@ func (s *pgUsageStore) GetDetails(ctx context.Context, offset, limit int) ([]Det
 	return details, nil
 }
 
-func (s *pgUsageStore) DeleteOldRecords(ctx context.Context, retentionDays int) (deleted int64, err error) {
+func (s *mysqlUsageStore) DeleteOldRecords(ctx context.Context, retentionDays int) (deleted int64, err error) {
 	if retentionDays <= 0 {
 		return 0, nil
 	}
 	table := s.fullTableName("usage_records")
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
-	query := fmt.Sprintf("DELETE FROM %s WHERE requested_at < $1", table)
+	query := fmt.Sprintf("DELETE FROM %s WHERE requested_at < ?", table)
 	result, err := s.db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("usage store: delete old records: %w", err)
@@ -736,7 +732,7 @@ func (s *pgUsageStore) DeleteOldRecords(ctx context.Context, retentionDays int) 
 	return deleted, nil
 }
 
-func (s *pgUsageStore) Close() error {
+func (s *mysqlUsageStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
@@ -1156,6 +1152,6 @@ func (s *sqliteUsageStore) Close() error {
 }
 
 func quoteIdentifier(identifier string) string {
-	replaced := strings.ReplaceAll(identifier, "\"", "\"\"")
-	return "\"" + replaced + "\""
+	replaced := strings.ReplaceAll(identifier, "`", "``")
+	return "`" + replaced + "`"
 }

@@ -66,7 +66,7 @@ type Config struct {
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
 	// UsagePersistenceEnabled toggles database persistence for usage statistics; when false (default),
-	// usage data is only kept in memory and lost on restart. When true, uses PostgreSQL if PGSTORE_DSN
+	// usage data is only kept in memory and lost on restart. When true, uses MySQL if MYSQLSTORE_DSN
 	// is set, otherwise SQLite in auth directory.
 	UsagePersistenceEnabled bool `yaml:"usage-persistence-enabled" json:"usage-persistence-enabled"`
 

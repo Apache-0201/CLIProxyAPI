@@ -14,7 +14,7 @@ temp/*
 refs/*
 
 # Storage backends
-pgstore/*
+mysqlstore/*
 gitstore/*
 objectstore/*
 

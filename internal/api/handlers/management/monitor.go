@@ -1160,6 +1160,23 @@ type monitorHourlyTokensResponse struct {
 	TimeRange       monitorTimeRange `json:"time_range"`
 }
 
+type monitorKeyTokenStatsItem struct {
+	APIKey            string  `json:"api_key"`
+	AuthIndex         string  `json:"auth_index"`
+	Requests          int64   `json:"requests"`
+	TotalTokens       int64   `json:"total_tokens"`
+	AccountTokens     int64   `json:"account_tokens"`
+	AccountTokenShare float64 `json:"account_token_share"`
+	TotalTokenShare   float64 `json:"total_token_share"`
+}
+
+type monitorKeyTokenAcc struct {
+	APIKey      string
+	Requests    int64
+	TotalTokens int64
+	AuthTokens  map[string]int64
+}
+
 // GetMonitorKpi returns aggregated KPI metrics from usage records.
 func (h *Handler) GetMonitorKpi(c *gin.Context) {
 	start, end, err := parseMonitorTimeRange(c)
@@ -1470,6 +1487,140 @@ func (h *Handler) GetMonitorDailyTrend(c *gin.Context) {
 		"items":      items,
 		"time_range": monitorTimeRange{Start: start, End: end},
 	})
+}
+
+// GetMonitorKeyTokenStats returns token usage aggregated by client API key.
+func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
+	start, end, err := parseMonitorTimeRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	dbPlugin := usage.GetDatabasePlugin()
+	if dbPlugin != nil && !isExplicitAllTimeRange(c) {
+		start, end = applyDefaultTimeRange(start, end, 1)
+	}
+
+	filter := monitorRecordFilter{
+		APIKey:      firstQuery(c, "api", "api_key"),
+		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
+		Model:       firstQuery(c, "model"),
+		Source:      firstQuery(c, "source", "channel"),
+		Start:       start,
+		End:         end,
+	}
+
+	accountTotals := make(map[string]int64)
+	keyTotals := make(map[string]*monitorKeyTokenAcc)
+	addRow := func(apiKey, authIndex string, requests, totalTokens int64) {
+		apiKey = strings.TrimSpace(apiKey)
+		if apiKey == "" {
+			apiKey = "unknown"
+		}
+		authIndex = strings.TrimSpace(authIndex)
+		if authIndex == "" {
+			authIndex = "unknown"
+		}
+
+		acc, ok := keyTotals[apiKey]
+		if !ok {
+			acc = &monitorKeyTokenAcc{APIKey: apiKey, AuthTokens: make(map[string]int64)}
+			keyTotals[apiKey] = acc
+		}
+		acc.Requests += requests
+		acc.TotalTokens += totalTokens
+		acc.AuthTokens[authIndex] += totalTokens
+		accountTotals[authIndex] += totalTokens
+	}
+
+	if dbPlugin != nil {
+		rows, queryErr := dbPlugin.QueryMonitorKeyTokenStats(c.Request.Context(), toUsageMonitorFilter(filter))
+		if queryErr == nil {
+			for _, row := range rows {
+				addRow(row.APIKey, row.AuthIndex, row.Requests, row.TotalTokens)
+			}
+			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+			return
+		}
+	}
+
+	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
+		if !filter.matches(record) {
+			return
+		}
+		tokens := int64(0)
+		if !record.Failed {
+			tokens = record.TotalTokens
+		}
+		addRow(record.APIKey, record.AuthIndex, 1, tokens)
+	})
+
+	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+}
+
+func buildMonitorKeyTokenStatsResponse(
+	keyTotals map[string]*monitorKeyTokenAcc,
+	accountTotals map[string]int64,
+	timeRange monitorTimeRange,
+) gin.H {
+	items := make([]monitorKeyTokenStatsItem, 0, len(keyTotals))
+	var totalTokens int64
+	for _, acc := range keyTotals {
+		totalTokens += acc.TotalTokens
+	}
+
+	for _, acc := range keyTotals {
+		authIndex := dominantAuthIndex(acc.AuthTokens)
+		accountTokens := accountTotals[authIndex]
+		items = append(items, monitorKeyTokenStatsItem{
+			APIKey:            acc.APIKey,
+			AuthIndex:         authIndex,
+			Requests:          acc.Requests,
+			TotalTokens:       acc.TotalTokens,
+			AccountTokens:     accountTokens,
+			AccountTokenShare: calcRate(acc.AuthTokens[authIndex], accountTokens),
+			TotalTokenShare:   calcRate(acc.TotalTokens, totalTokens),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].TotalTokens == items[j].TotalTokens {
+			return items[i].APIKey < items[j].APIKey
+		}
+		return items[i].TotalTokens > items[j].TotalTokens
+	})
+
+	accountResp := make(map[string]int64, len(accountTotals))
+	for account, tokens := range accountTotals {
+		accountResp[account] = tokens
+	}
+
+	return gin.H{
+		"items":          items,
+		"total":          len(items),
+		"total_tokens":   totalTokens,
+		"account_totals": accountResp,
+		"time_range":     timeRange,
+	}
+}
+
+func dominantAuthIndex(authTokens map[string]int64) string {
+	if len(authTokens) == 0 {
+		return "unknown"
+	}
+	bestAuth := ""
+	var bestTokens int64 = -1
+	for authIndex, tokens := range authTokens {
+		if bestAuth == "" || tokens > bestTokens || (tokens == bestTokens && authIndex < bestAuth) {
+			bestAuth = authIndex
+			bestTokens = tokens
+		}
+	}
+	if bestAuth == "" {
+		return "unknown"
+	}
+	return bestAuth
 }
 
 // GetMonitorHourlyModels returns per-hour per-model request counts for the top N models.

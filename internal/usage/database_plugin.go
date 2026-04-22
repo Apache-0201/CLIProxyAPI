@@ -58,7 +58,20 @@ type DatabasePlugin struct {
 // InitDatabasePlugin initializes the global database plugin.
 // If initialization fails, returns the error but does not prevent the system from running.
 // Reads USAGE_RETENTION_DAYS environment variable for data retention period (default 30 days).
-func InitDatabasePlugin(ctx context.Context, pgDSN, pgSchema, authDir string) error {
+func InitDatabasePlugin(ctx context.Context, mysqlDSN, authDir string) error {
+	return initDatabasePlugin(ctx, strings.TrimSpace(mysqlDSN) != "", func() (UsageStore, error) {
+		return NewUsageStore(ctx, mysqlDSN, authDir)
+	})
+}
+
+// InitPostgresDatabasePlugin initializes usage persistence with PostgreSQL.
+func InitPostgresDatabasePlugin(ctx context.Context, pgDSN, pgSchema, authDir string) error {
+	return initDatabasePlugin(ctx, strings.TrimSpace(pgDSN) != "", func() (UsageStore, error) {
+		return NewPostgresUsageStore(ctx, pgDSN, pgSchema, authDir)
+	})
+}
+
+func initDatabasePlugin(ctx context.Context, storeOnlySnapshot bool, newStore func() (UsageStore, error)) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -76,7 +89,7 @@ func InitDatabasePlugin(ctx context.Context, pgDSN, pgSchema, authDir string) er
 		return nil
 	}
 
-	store, err := NewUsageStore(ctx, pgDSN, pgSchema, authDir)
+	store, err := newStore()
 	if err != nil {
 		return err
 	}
@@ -91,7 +104,7 @@ func InitDatabasePlugin(ctx context.Context, pgDSN, pgSchema, authDir string) er
 	plugin := &DatabasePlugin{
 		store:             store,
 		retentionDays:     retentionDays,
-		storeOnlySnapshot: strings.TrimSpace(pgDSN) != "",
+		storeOnlySnapshot: storeOnlySnapshot,
 		buffer:            make([]UsageRecord, 0, defaultBufferSize),
 		flushCh:           make(chan struct{}, 1),
 		closeCh:           make(chan struct{}),
@@ -137,23 +150,29 @@ func CloseDatabasePlugin() {
 }
 
 // UpdatePersistence enables or disables usage persistence based on the provided flag.
-// When enabling, it reads PGSTORE_DSN/pgstore_dsn and PGSTORE_SCHEMA/pgstore_schema
+// When enabling, it reads PGSTORE_DSN/pgstore_dsn first, then MYSQLSTORE_DSN/mysqlstore_dsn
 // from environment variables to determine the database backend.
-// If PGSTORE_DSN is empty, SQLite is used with the database stored in authDir.
+// If both are empty, SQLite is used with the database stored in authDir.
 func UpdatePersistence(ctx context.Context, enabled bool, authDir string) error {
 	if !enabled {
 		CloseDatabasePlugin()
 		return nil
 	}
 	pgStoreDSN := util.GetEnvTrimmed("PGSTORE_DSN", "pgstore_dsn")
-	pgStoreSchema := util.GetEnvTrimmed("PGSTORE_SCHEMA", "pgstore_schema")
+	if pgStoreDSN != "" {
+		pgStoreSchema := util.GetEnvTrimmed("PGSTORE_SCHEMA", "pgstore_schema")
+		CloseDatabasePlugin()
+		return InitPostgresDatabasePlugin(ctx, pgStoreDSN, pgStoreSchema, authDir)
+	}
+	mysqlStoreDSN := util.GetEnvTrimmed("MYSQLSTORE_DSN", "mysqlstore_dsn")
 	CloseDatabasePlugin()
-	return InitDatabasePlugin(ctx, pgStoreDSN, pgStoreSchema, authDir)
+	return InitDatabasePlugin(ctx, mysqlStoreDSN, authDir)
 }
 
-// UsingSQLiteBackend returns true if the usage persistence would use SQLite (no PGSTORE_DSN set).
+// UsingSQLiteBackend returns true if the usage persistence would use SQLite.
 func UsingSQLiteBackend() bool {
-	return util.GetEnvTrimmed("PGSTORE_DSN", "pgstore_dsn") == ""
+	return util.GetEnvTrimmed("PGSTORE_DSN", "pgstore_dsn") == "" &&
+		util.GetEnvTrimmed("MYSQLSTORE_DSN", "mysqlstore_dsn") == ""
 }
 
 // flushLoop periodically flushes the buffer to the database and cleans up old records.

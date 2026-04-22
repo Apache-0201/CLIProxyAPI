@@ -49,7 +49,11 @@ usage-persistence-enabled: true
 Automatically cleans up old usage statistics data:
 - Configurable retention period via `USAGE_RETENTION_DAYS` environment variable (default: 30 days)
 - Executes cleanup on startup and every 4 hours
-- Supports both PostgreSQL and SQLite backends
+- Supports both MySQL and SQLite backends
+
+### Local `.env` Credential Injection
+
+The server loads `.env` from the working directory before storage initialization. Use `MYSQLSTORE_DSN` for the MySQL-backed config/auth store, `MYSQLSTORE_LOCAL_PATH` for its local spool directory, and `AUTH_BOOTSTRAP_DIR` or `AUTH_BOOTSTRAP_FILE` to import local auth JSON files into the configured token store on startup. Existing auth IDs are skipped unless `AUTH_BOOTSTRAP_OVERWRITE=true`.
 
 ### CI/CD Optimizations
 
@@ -229,7 +233,7 @@ A Windows tray application implemented using PowerShell scripts, without relying
 
 ### [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard)
 
-A modern web-based management dashboard for CLIProxyAPI built with Next.js, React, and PostgreSQL. Features real-time log streaming, structured configuration editing, API key management, OAuth provider integration for Claude/Gemini/Codex, usage analytics, container management, and config sync with OpenCode via companion plugin - no manual YAML editing needed.
+A modern web-based management dashboard for CLIProxyAPI built with Next.js, React, and a database backend. Features real-time log streaming, structured configuration editing, API key management, OAuth provider integration for Claude/Gemini/Codex, usage analytics, container management, and config sync with OpenCode via companion plugin - no manual YAML editing needed.
 
 ### [All API Hub](https://github.com/qixing-jk/all-api-hub)
 

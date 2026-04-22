@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,25 +13,38 @@ import (
 func TestResolveLocalUsageDBPath(t *testing.T) {
 	authDir := filepath.Join(t.TempDir(), "auth")
 
-	t.Setenv("PGSTORE_LOCAL_PATH", filepath.Join(t.TempDir(), "pglocal"))
+	t.Setenv("MYSQLSTORE_LOCAL_PATH", filepath.Join(t.TempDir(), "mysqllocal"))
 	got := resolveLocalUsageDBPath(authDir)
-	want := filepath.Join(getEnvOrFatal(t, "PGSTORE_LOCAL_PATH"), defaultLocalUsageFileName)
+	want := filepath.Join(getEnvOrFatal(t, "MYSQLSTORE_LOCAL_PATH"), defaultLocalUsageFileName)
 	if got != want {
 		t.Fatalf("unexpected local db path: got %q want %q", got, want)
 	}
 
-	t.Setenv("PGSTORE_LOCAL_PATH", filepath.Join(t.TempDir(), "custom.db"))
+	t.Setenv("MYSQLSTORE_LOCAL_PATH", filepath.Join(t.TempDir(), "custom.db"))
 	got = resolveLocalUsageDBPath(authDir)
-	want = getEnvOrFatal(t, "PGSTORE_LOCAL_PATH")
+	want = getEnvOrFatal(t, "MYSQLSTORE_LOCAL_PATH")
 	if got != want {
 		t.Fatalf("unexpected db file path: got %q want %q", got, want)
 	}
 
-	t.Setenv("PGSTORE_LOCAL_PATH", "")
+	t.Setenv("MYSQLSTORE_LOCAL_PATH", "")
 	got = resolveLocalUsageDBPath(authDir)
 	want = filepath.Join(authDir, defaultLocalUsageFileName)
 	if got != want {
 		t.Fatalf("unexpected fallback db path: got %q want %q", got, want)
+	}
+}
+
+func TestNormalizeMySQLDSNForUsageEnablesParseTime(t *testing.T) {
+	got, err := normalizeMySQLDSN("user:pass@tcp(localhost:3306)/cliproxy?charset=utf8mb4")
+	if err != nil {
+		t.Fatalf("normalizeMySQLDSN failed: %v", err)
+	}
+	if !strings.Contains(got, "parseTime=true") {
+		t.Fatalf("expected parseTime=true in normalized DSN, got %q", got)
+	}
+	if strings.Contains(got, "parseTime=false") {
+		t.Fatalf("normalized DSN must not keep parseTime=false: %q", got)
 	}
 }
 

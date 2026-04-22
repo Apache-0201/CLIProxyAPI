@@ -49,7 +49,11 @@ usage-persistence-enabled: true
 自动清理旧的使用量统计数据：
 - 通过 `USAGE_RETENTION_DAYS` 环境变量配置保留天数（默认：30 天）
 - 启动时执行清理，之后每 4 小时自动清理
-- 同时支持 PostgreSQL 和 SQLite 后端
+- 同时支持 MySQL 和 SQLite 后端
+
+### 本地 `.env` 凭证注入
+
+服务会在存储初始化前加载工作目录下的 `.env`。通过 `MYSQLSTORE_DSN` 配置 MySQL 后端，`MYSQLSTORE_LOCAL_PATH` 配置本地 spool 目录，并可通过 `AUTH_BOOTSTRAP_DIR` 或 `AUTH_BOOTSTRAP_FILE` 在启动时把本地 auth JSON 凭证导入当前 token store。默认跳过已有 auth ID；只有 `AUTH_BOOTSTRAP_OVERWRITE=true` 时才覆盖。
 
 ### CI/CD 优化
 
@@ -228,7 +232,7 @@ Windows 托盘应用，基于 PowerShell 脚本实现，不依赖任何第三方
 
 ### [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard)
 
-一个面向 CLIProxyAPI 的现代化 Web 管理仪表盘，基于 Next.js、React 和 PostgreSQL 构建。支持实时日志流、结构化配置编辑、API Key 管理、Claude/Gemini/Codex 的 OAuth 提供方集成、使用量分析、容器管理，并可通过配套插件与 OpenCode 同步配置，无需手动编辑 YAML。
+一个面向 CLIProxyAPI 的现代化 Web 管理仪表盘，基于 Next.js、React 和数据库后端构建。支持实时日志流、结构化配置编辑、API Key 管理、Claude/Gemini/Codex 的 OAuth 提供方集成、使用量分析、容器管理，并可通过配套插件与 OpenCode 同步配置，无需手动编辑 YAML。
 
 ### [All API Hub](https://github.com/qixing-jk/all-api-hub)
 

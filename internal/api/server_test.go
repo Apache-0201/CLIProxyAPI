@@ -53,10 +53,8 @@ func newTestServer(t *testing.T) *Server {
 }
 
 func TestUsagePersistenceEnabledHotReload(t *testing.T) {
-	t.Setenv("PGSTORE_DSN", "")
-	t.Setenv("pgstore_dsn", "")
-	t.Setenv("PGSTORE_SCHEMA", "")
-	t.Setenv("pgstore_schema", "")
+	t.Setenv("MYSQLSTORE_DSN", "")
+	t.Setenv("mysqlstore_dsn", "")
 
 	internalusage.CloseDatabasePlugin()
 	defer internalusage.CloseDatabasePlugin()
