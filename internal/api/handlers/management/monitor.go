@@ -1160,6 +1160,14 @@ type monitorHourlyTokensResponse struct {
 	TimeRange       monitorTimeRange `json:"time_range"`
 }
 
+type monitorHourlyPerformanceResponse struct {
+	Slots                  []string         `json:"slots"`
+	AvgRPM                 []float64        `json:"avg_rpm"`
+	AvgFirstTokenLatencyMs []float64        `json:"avg_first_token_latency_ms"`
+	Granularity            string           `json:"granularity"`
+	TimeRange              monitorTimeRange `json:"time_range"`
+}
+
 type monitorKeyTokenStatsItem struct {
 	APIKey            string           `json:"api_key"`
 	AuthIndex         string           `json:"auth_index"`
@@ -1916,8 +1924,159 @@ func (h *Handler) GetMonitorHourlyTokens(c *gin.Context) {
 	})
 }
 
+// GetMonitorHourlyPerformance returns slot-based avg rpm and avg first-token latency metrics.
+func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
+	start, end, err := parseMonitorTimeRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	hours, err := parseMonitorPerformanceHoursParam(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	granularity, slotDuration, err := parseMonitorPerformanceGranularity(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	filter := monitorRecordFilter{
+		APIKey:      firstQuery(c, "api", "api_key"),
+		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
+		Model:       firstQuery(c, "model"),
+		Source:      firstQuery(c, "source", "channel"),
+		Start:       start,
+		End:         end,
+	}
+
+	now := time.Now()
+	anchor := now
+	if end != nil && end.Before(anchor) {
+		anchor = end.Local()
+	}
+	slots, slotIndex, cutoff := buildMonitorPerformanceSlots(anchor, hours, slotDuration)
+	slotCount := len(slots)
+	slotSeconds := int(slotDuration / time.Second)
+
+	buildResponse := func(requests, latencySamples, latencyTotals []int64) monitorHourlyPerformanceResponse {
+		avgRPM := make([]float64, slotCount)
+		avgFirstTokenLatency := make([]float64, slotCount)
+		for i := 0; i < slotCount; i++ {
+			if requests[i] > 0 {
+				avgRPM[i] = float64(requests[i]) * 60 / float64(slotSeconds)
+			}
+			if latencySamples[i] > 0 {
+				avgFirstTokenLatency[i] = float64(latencyTotals[i]) / float64(latencySamples[i])
+			}
+		}
+		return monitorHourlyPerformanceResponse{
+			Slots:                  slots,
+			AvgRPM:                 avgRPM,
+			AvgFirstTokenLatencyMs: avgFirstTokenLatency,
+			Granularity:            granularity,
+			TimeRange:              monitorTimeRange{Start: start, End: end},
+		}
+	}
+
+	if dbPlugin := usage.GetDatabasePlugin(); dbPlugin != nil {
+		performanceSlots, queryErr := dbPlugin.QueryMonitorPerformanceSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), anchor.Unix(), slotSeconds)
+		if queryErr == nil {
+			requests := make([]int64, slotCount)
+			latencySamples := make([]int64, slotCount)
+			latencyTotals := make([]int64, slotCount)
+
+			for _, slot := range performanceSlots {
+				if slot.SlotIndex < 0 || slot.SlotIndex >= slotCount {
+					continue
+				}
+				requests[slot.SlotIndex] = slot.Requests
+				latencySamples[slot.SlotIndex] = slot.FirstTokenLatencySamples
+				latencyTotals[slot.SlotIndex] = slot.FirstTokenLatencyTotalMs
+			}
+
+			c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals))
+			return
+		}
+	}
+
+	requests := make([]int64, slotCount)
+	latencySamples := make([]int64, slotCount)
+	latencyTotals := make([]int64, slotCount)
+
+	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
+		if record.Timestamp.Before(cutoff) {
+			return
+		}
+		if !filter.matches(record) {
+			return
+		}
+		slotKey := record.Timestamp.Local().Truncate(slotDuration).Format("2006-01-02T15:04:05-07:00")
+		idx, ok := slotIndex[slotKey]
+		if !ok {
+			return
+		}
+		requests[idx]++
+		if record.FirstTokenLatencyMs > 0 {
+			latencySamples[idx]++
+			latencyTotals[idx] += record.FirstTokenLatencyMs
+		}
+	})
+
+	c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals))
+}
+
 func parseHoursParam(c *gin.Context) (int, error) {
 	return parseBoundedInt(firstQuery(c, "hours"), 24, 1, 168)
+}
+
+func parseMonitorPerformanceHoursParam(c *gin.Context) (int, error) {
+	raw := strings.TrimSpace(firstQuery(c, "hours"))
+	if raw == "" {
+		return 24, nil
+	}
+	hours, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errInvalidInteger()
+	}
+	switch hours {
+	case 6, 12, 24:
+		return hours, nil
+	default:
+		return 0, errInvalidInteger()
+	}
+}
+
+func parseMonitorPerformanceGranularity(c *gin.Context) (string, time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(firstQuery(c, "granularity"))) {
+	case "", "hour", "hourly":
+		return "hour", time.Hour, nil
+	case "minute", "minutely":
+		return "minute", time.Minute, nil
+	default:
+		return "", 0, errInvalidInteger()
+	}
+}
+
+func buildMonitorPerformanceSlots(anchor time.Time, hours int, slotDuration time.Duration) ([]string, map[string]int, time.Time) {
+	if slotDuration <= 0 {
+		slotDuration = time.Hour
+	}
+	slotCount := int((time.Duration(hours) * time.Hour) / slotDuration)
+	if slotCount < 1 {
+		slotCount = 1
+	}
+	alignedAnchor := anchor.Local().Truncate(slotDuration)
+	cutoff := alignedAnchor.Add(-time.Duration(slotCount-1) * slotDuration)
+	slots := make([]string, 0, slotCount)
+	slotIndex := make(map[string]int, slotCount)
+	for current := cutoff; !current.After(alignedAnchor); current = current.Add(slotDuration) {
+		key := current.Format("2006-01-02T15:04:05-07:00")
+		slotIndex[key] = len(slots)
+		slots = append(slots, key)
+	}
+	return slots, slotIndex, cutoff
 }
 
 type monitorValidationError struct {

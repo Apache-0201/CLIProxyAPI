@@ -219,8 +219,9 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "fill-first", "sequential-fill" ("sf"), "account-bind".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
-	// DefaultModelAccount is the auth_index used for client API keys that have no explicit
-	// binding when strategy is "account-bind". Leave empty to require per-key bindings.
+	// DefaultModelAccount is the durable auth_identity reference used for client API keys
+	// that have no explicit binding when strategy is "account-bind".
+	// The runtime resolves it to the current auth_index. Leave empty to require per-key bindings.
 	DefaultModelAccount string `yaml:"default-model-account,omitempty" json:"default-model-account,omitempty"`
 }
 
@@ -1929,7 +1930,6 @@ func extractAPIKeyAuthBindingRefs(data []byte) (map[string]string, map[string]st
 		if seq.Kind != yaml.SequenceNode {
 			return nil, nil
 		}
-		indexBindings := make(map[string]string, len(seq.Content))
 		identityBindings := make(map[string]string, len(seq.Content))
 		for _, item := range seq.Content {
 			if item.Kind != yaml.MappingNode {
@@ -1939,20 +1939,14 @@ func extractAPIKeyAuthBindingRefs(data []byte) (map[string]string, map[string]st
 			if key == "" {
 				continue
 			}
-			if authIndex := strings.TrimSpace(mappingScalar(item, "auth_index", "auth-index", "authIndex")); authIndex != "" {
-				indexBindings[key] = authIndex
-			}
 			if authIdentity := strings.TrimSpace(mappingScalar(item, "auth_identity", "auth-identity", "authIdentity")); authIdentity != "" {
 				identityBindings[key] = authIdentity
 			}
 		}
-		if len(indexBindings) == 0 {
-			indexBindings = nil
-		}
 		if len(identityBindings) == 0 {
 			identityBindings = nil
 		}
-		return indexBindings, identityBindings
+		return nil, identityBindings
 	}
 	return nil, nil
 }

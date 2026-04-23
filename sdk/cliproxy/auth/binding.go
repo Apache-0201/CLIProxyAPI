@@ -3,17 +3,12 @@ package auth
 import "strings"
 
 // ResolveBindingIndexes converts persisted binding references into current auth_index values.
-// auth_identity wins over auth_index because it survives auth file rewrites.
+// Only auth_identity is accepted as a durable binding reference.
 func ResolveBindingIndexes(auths []*Auth, indexBindings, identityBindings map[string]string, defaultRef string) (map[string]string, string) {
+	_ = indexBindings
+
 	identityToIndex := StableIdentityIndexMap(auths)
-	resolved := make(map[string]string, len(indexBindings)+len(identityBindings))
-	for clientKey, authIndex := range indexBindings {
-		clientKey = strings.TrimSpace(clientKey)
-		authIndex = strings.TrimSpace(authIndex)
-		if clientKey != "" && authIndex != "" {
-			resolved[clientKey] = authIndex
-		}
-	}
+	resolved := make(map[string]string, len(identityBindings))
 	for clientKey, identity := range identityBindings {
 		clientKey = strings.TrimSpace(clientKey)
 		identity = strings.TrimSpace(identity)
@@ -69,8 +64,5 @@ func resolveDefaultBindingRef(ref string, identityToIndex map[string]string) str
 	if authIndex := identityToIndex[ref]; authIndex != "" {
 		return authIndex
 	}
-	if strings.Contains(ref, ":") {
-		return ""
-	}
-	return ref
+	return ""
 }

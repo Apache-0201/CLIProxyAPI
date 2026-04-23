@@ -301,11 +301,11 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 }
 
 // TestAccountBindMiddleware_PerKeyBindingIgnoredWithoutAccountBindStrategy verifies that
-// api-keys auth_index metadata has no runtime effect unless routing.strategy is account-bind.
+// api-keys auth_identity metadata has no runtime effect unless routing.strategy is account-bind.
 func TestAccountBindMiddleware_PerKeyBindingIgnoredWithoutAccountBindStrategy(t *testing.T) {
 	const (
 		clientKey = "sk-apache-0i6G7JPCeBwOVSqbF"
-		boundIdx  = "2a2d14935e2bcab3"
+		boundRef  = "codex:chatgpt:acct-bound"
 	)
 
 	s := newTestServer(t)
@@ -313,8 +313,10 @@ func TestAccountBindMiddleware_PerKeyBindingIgnoredWithoutAccountBindStrategy(t 
 	// routing.strategy stays at the default (round-robin). Per-key binding must not apply.
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
-			APIKeys:            sdkconfig.FlexAPIKeyList{clientKey},
-			APIKeyAuthBindings: map[string]string{clientKey: boundIdx},
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: boundRef,
+			},
 		},
 	}
 	s.UpdateBindingConfig(cfg)
@@ -401,7 +403,7 @@ func TestAccountBindMiddleware_DefaultModelAccountIgnoredWithoutAccountBindStrat
 		SDKConfig: sdkconfig.SDKConfig{
 			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
 		},
-		Routing: proxyconfig.RoutingConfig{DefaultModelAccount: "idx-default"},
+		Routing: proxyconfig.RoutingConfig{DefaultModelAccount: "codex:chatgpt:acct-default"},
 	}
 	s.UpdateBindingConfig(cfg)
 
@@ -421,20 +423,48 @@ func TestAccountBindMiddleware_DefaultModelAccountIgnoredWithoutAccountBindStrat
 }
 
 func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy(t *testing.T) {
-	s := newTestServer(t)
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
 
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
 			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
 		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
 		Routing: proxyconfig.RoutingConfig{
 			Strategy:            "account-bind",
-			DefaultModelAccount: "idx-default",
+			DefaultModelAccount: "codex:chatgpt:acct-default",
 		},
 	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	registered, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-default",
+		Provider: "codex",
+		FileName: "codex-default.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-default"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	if registered.Index == "" {
+		t.Fatalf("registered auth_index must not be empty")
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
 	s.UpdateBindingConfig(cfg)
 
-	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Set("apiKey", "sk-client")
@@ -444,8 +474,41 @@ func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy
 	if c.IsAborted() {
 		t.Fatalf("middleware should not abort when default-model-account resolves; status=%d", c.Writer.Status())
 	}
-	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "idx-default" {
-		t.Fatalf("default-model-account not injected: got %q, want %q", got, "idx-default")
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != registered.Index {
+		t.Fatalf("default-model-account not injected: got %q, want %q", got, registered.Index)
+	}
+}
+
+func TestAccountBindMiddleware_LegacyDefaultModelAccountRejectedInAccountBindStrategy(t *testing.T) {
+	s := newTestServer(t)
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
+		},
+		Routing: proxyconfig.RoutingConfig{
+			Strategy:            "account-bind",
+			DefaultModelAccount: "idx-legacy",
+		},
+	}
+	s.UpdateBindingConfig(cfg)
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", "sk-client")
+
+	s.accountBindMiddleware()(c)
+
+	if !c.IsAborted() {
+		t.Fatalf("legacy default-model-account must not satisfy strict account-bind mode")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("strict rejection should be 400, got %d", rec.Code)
+	}
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
+		t.Fatalf("legacy default-model-account must not inject auth_index: got %q", got)
 	}
 }
 

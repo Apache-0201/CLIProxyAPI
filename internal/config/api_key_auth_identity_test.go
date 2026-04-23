@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadConfigOptionalExtractsAPIKeyAuthIdentityBinding(t *testing.T) {
+func TestLoadConfigOptionalExtractsOnlyAPIKeyAuthIdentityBinding(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -30,7 +30,7 @@ api-keys:
 	if got := cfg.APIKeyAuthIdentityBindings["sk-client"]; got != "codex:chatgpt:acct-stable" {
 		t.Fatalf("auth_identity binding = %q, want %q", got, "codex:chatgpt:acct-stable")
 	}
-	if got := cfg.APIKeyAuthBindings["sk-client"]; got != "old-runtime-index" {
-		t.Fatalf("legacy auth_index binding = %q, want %q", got, "old-runtime-index")
+	if len(cfg.APIKeyAuthBindings) != 0 {
+		t.Fatalf("legacy auth_index bindings must not be loaded from config: got %#v", cfg.APIKeyAuthBindings)
 	}
 }

@@ -128,6 +128,7 @@ type monitorQueryableStore interface {
 	QueryMonitorDailyTrend(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyTrendItem, error)
 	QueryMonitorHourlySlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlySlot, error)
 	QueryMonitorHourlyTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyTokenSlot, error)
+	QueryMonitorPerformanceSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorPerformanceSlot, error)
 	QueryMonitorHealthBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorHealthBlock, error)
 	QueryMonitorKeyStatsBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorKeyStatsRow, error)
 	QueryMonitorKeyTokenStats(ctx context.Context, filter MonitorQueryFilter) ([]MonitorKeyTokenStatsRow, error)
@@ -193,6 +194,14 @@ type MonitorHourlyTokenSlot struct {
 	OutputTokens    int64
 	ReasoningTokens int64
 	CachedTokens    int64
+}
+
+// MonitorPerformanceSlot represents per-slot aggregates for rpm and first-token latency charts.
+type MonitorPerformanceSlot struct {
+	SlotIndex                int
+	Requests                 int64
+	FirstTokenLatencySamples int64
+	FirstTokenLatencyTotalMs int64
 }
 
 // MonitorHealthBlock represents a single time block for service health.
@@ -343,6 +352,18 @@ func (p *DatabasePlugin) QueryMonitorHourlyTokenSlots(ctx context.Context, filte
 	return queryable.QueryMonitorHourlyTokenSlots(ctx, normalizeMonitorFilter(filter), cutoffUnix, nowUnix, slotSeconds)
 }
 
+// QueryMonitorPerformanceSlots queries per-slot rpm/first-token-latency aggregates directly from persistence layer.
+func (p *DatabasePlugin) QueryMonitorPerformanceSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorPerformanceSlot, error) {
+	queryable, err := p.monitorQueryableStore()
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return queryable.QueryMonitorPerformanceSlots(ctx, normalizeMonitorFilter(filter), cutoffUnix, nowUnix, slotSeconds)
+}
+
 // QueryMonitorHealthBlocks queries time-block health aggregates directly from persistence layer.
 func (p *DatabasePlugin) QueryMonitorHealthBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorHealthBlock, error) {
 	queryable, err := p.monitorQueryableStore()
@@ -440,6 +461,13 @@ func (s *mirrorUsageStore) QueryMonitorHourlyTokenSlots(ctx context.Context, fil
 		return nil, fmt.Errorf("usage store: mirror store not initialized")
 	}
 	return s.local.QueryMonitorHourlyTokenSlots(ctx, filter, cutoffUnix, nowUnix, slotSeconds)
+}
+
+func (s *mirrorUsageStore) QueryMonitorPerformanceSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorPerformanceSlot, error) {
+	if s == nil || s.local == nil {
+		return nil, fmt.Errorf("usage store: mirror store not initialized")
+	}
+	return s.local.QueryMonitorPerformanceSlots(ctx, filter, cutoffUnix, nowUnix, slotSeconds)
 }
 
 func (s *mirrorUsageStore) QueryMonitorHealthBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorHealthBlock, error) {
@@ -1686,6 +1714,50 @@ func (s *sqliteUsageStore) QueryMonitorHourlyTokenSlots(ctx context.Context, fil
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("usage store: iterate monitor hourly token slots: %w", err)
+	}
+	return items, nil
+}
+
+func (s *sqliteUsageStore) QueryMonitorPerformanceSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorPerformanceSlot, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("usage store: sqlite store not initialized")
+	}
+	if slotSeconds <= 0 {
+		slotSeconds = 3600
+	}
+
+	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	query := fmt.Sprintf(`
+		SELECT (requested_at - ?) / ? AS slot_idx,
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN first_token_latency_ms > 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN first_token_latency_ms > 0 THEN first_token_latency_ms ELSE 0 END), 0)
+		FROM usage_records
+		WHERE %s AND requested_at >= ? AND requested_at <= ?
+		GROUP BY slot_idx
+	`, whereClause)
+
+	queryArgs := make([]any, 0, len(args)+4)
+	queryArgs = append(queryArgs, cutoffUnix, slotSeconds)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, cutoffUnix, nowUnix)
+
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: query monitor performance slots: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]MonitorPerformanceSlot, 0)
+	for rows.Next() {
+		var item MonitorPerformanceSlot
+		if err = rows.Scan(&item.SlotIndex, &item.Requests, &item.FirstTokenLatencySamples, &item.FirstTokenLatencyTotalMs); err != nil {
+			return nil, fmt.Errorf("usage store: scan monitor performance slot: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate monitor performance slots: %w", err)
 	}
 	return items, nil
 }
