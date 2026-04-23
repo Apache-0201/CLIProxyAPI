@@ -258,6 +258,7 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 	}
 
 	method, path := ginMethodPath(ctx)
+	detail := normaliseDetail(record.Detail)
 
 	dbRecord := UsageRecord{
 		APIKey:              record.APIKey,
@@ -266,11 +267,11 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 		AuthIndex:           record.AuthIndex,
 		Failed:              record.Failed,
 		RequestedAt:         record.RequestedAt,
-		InputTokens:         record.Detail.InputTokens,
-		OutputTokens:        record.Detail.OutputTokens,
-		ReasoningTokens:     record.Detail.ReasoningTokens,
-		CachedTokens:        record.Detail.CachedTokens,
-		TotalTokens:         record.Detail.TotalTokens,
+		InputTokens:         detail.InputTokens,
+		OutputTokens:        detail.OutputTokens,
+		ReasoningTokens:     detail.ReasoningTokens,
+		CachedTokens:        detail.CachedTokens,
+		TotalTokens:         detail.TotalTokens,
 		Method:              method,
 		Path:                path,
 		LatencyMs:           normaliseLatency(record.Latency),
@@ -317,6 +318,7 @@ func (p *DatabasePlugin) ImportRecords(snapshot StatisticsSnapshot) (added, skip
 	for apiKey, apiSnapshot := range snapshot.APIs {
 		for model, modelSnapshot := range apiSnapshot.Models {
 			for _, detail := range modelSnapshot.Details {
+				tokens := normaliseTokenStats(detail.Tokens)
 				records = append(records, UsageRecord{
 					APIKey:              apiKey,
 					Model:               model,
@@ -324,11 +326,11 @@ func (p *DatabasePlugin) ImportRecords(snapshot StatisticsSnapshot) (added, skip
 					AuthIndex:           detail.AuthIndex,
 					Failed:              detail.Failed,
 					RequestedAt:         detail.Timestamp,
-					InputTokens:         detail.Tokens.InputTokens,
-					OutputTokens:        detail.Tokens.OutputTokens,
-					ReasoningTokens:     detail.Tokens.ReasoningTokens,
-					CachedTokens:        detail.Tokens.CachedTokens,
-					TotalTokens:         detail.Tokens.TotalTokens,
+					InputTokens:         tokens.InputTokens,
+					OutputTokens:        tokens.OutputTokens,
+					ReasoningTokens:     tokens.ReasoningTokens,
+					CachedTokens:        tokens.CachedTokens,
+					TotalTokens:         tokens.TotalTokens,
 					LatencyMs:           detail.LatencyMs,
 					FirstTokenLatencyMs: detail.FirstTokenLatencyMs,
 				})

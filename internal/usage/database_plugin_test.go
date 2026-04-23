@@ -102,3 +102,31 @@ func TestGetCombinedSnapshot_StoreOnlySnapshotIgnoresMemory(t *testing.T) {
 		t.Fatalf("db api missing in snapshot")
 	}
 }
+
+func TestDatabasePluginHandleUsage_NormalizesTotalTokens(t *testing.T) {
+	plugin := &DatabasePlugin{
+		store:  &fakeUsageStore{},
+		buffer: make([]UsageRecord, 0, 1),
+	}
+
+	plugin.HandleUsage(context.Background(), coreusage.Record{
+		APIKey:      "api-a",
+		Model:       "model-a",
+		Source:      "source-a",
+		AuthIndex:   "burn",
+		RequestedAt: time.Now(),
+		Detail: coreusage.Detail{
+			InputTokens:  71,
+			OutputTokens: 1,
+			CachedTokens: 71,
+			TotalTokens:  0,
+		},
+	})
+
+	if len(plugin.buffer) != 1 {
+		t.Fatalf("unexpected buffer size: got %d want 1", len(plugin.buffer))
+	}
+	if plugin.buffer[0].TotalTokens != 72 {
+		t.Fatalf("unexpected normalized total tokens: got %d want 72", plugin.buffer[0].TotalTokens)
+	}
+}

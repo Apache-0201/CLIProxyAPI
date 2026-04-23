@@ -1376,6 +1376,16 @@ func normalizeMonitorSource(source string) string {
 	return trimmed
 }
 
+func effectiveTotalTokensSQL() string {
+	return `
+CASE
+	WHEN COALESCE(total_tokens, 0) > 0 THEN COALESCE(total_tokens, 0)
+	WHEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0) > 0
+		THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0)
+	ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0) + COALESCE(cached_tokens, 0)
+END`
+}
+
 func escapeSQLiteLike(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
 	return replacer.Replace(value)
@@ -1528,12 +1538,13 @@ func (s *sqliteUsageStore) QueryMonitorKpi(ctx context.Context, filter MonitorQu
 	}
 
 	whereClause, args := buildSQLiteMonitorWhere(filter, true)
+	effectiveTotalExpr := effectiveTotalTokensSQL()
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN failed=1 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN failed=0 THEN total_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN %s ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN failed=0 THEN input_tokens ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN failed=0 THEN output_tokens ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN failed=0 THEN reasoning_tokens ELSE 0 END), 0),
@@ -1542,7 +1553,7 @@ func (s *sqliteUsageStore) QueryMonitorKpi(ctx context.Context, filter MonitorQu
 			MAX(requested_at)
 		FROM usage_records
 		WHERE %s
-	`, whereClause)
+	`, effectiveTotalExpr, whereClause)
 
 	var result MonitorKpiResult
 	var minTs, maxTs sql.NullInt64
@@ -1573,18 +1584,19 @@ func (s *sqliteUsageStore) QueryMonitorModelDistribution(ctx context.Context, fi
 	limit = clampInt(limit, 1, 100, 10)
 
 	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	effectiveTotalExpr := effectiveTotalTokensSQL()
 	orderBy := "cnt DESC, model ASC"
 	if sortByTokens {
 		orderBy = "tokens DESC, model ASC"
 	}
 	query := fmt.Sprintf(`
-		SELECT model, COUNT(*) AS cnt, COALESCE(SUM(total_tokens), 0) AS tokens
+		SELECT model, COUNT(*) AS cnt, COALESCE(SUM(%s), 0) AS tokens
 		FROM usage_records
 		WHERE %s
 		GROUP BY model
 		ORDER BY %s
 		LIMIT ?
-	`, whereClause, orderBy)
+	`, effectiveTotalExpr, whereClause, orderBy)
 	queryArgs := append(copyArgs(args), limit)
 
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
@@ -1710,9 +1722,10 @@ func (s *sqliteUsageStore) QueryMonitorHourlyTokenSlots(ctx context.Context, fil
 	}
 
 	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	effectiveTotalExpr := effectiveTotalTokensSQL()
 	query := fmt.Sprintf(`
 		SELECT (requested_at - ?) / ? AS slot_idx,
-			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(%s), 0),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(reasoning_tokens), 0),
@@ -1720,7 +1733,7 @@ func (s *sqliteUsageStore) QueryMonitorHourlyTokenSlots(ctx context.Context, fil
 		FROM usage_records
 		WHERE %s AND requested_at >= ? AND requested_at <= ? AND failed = 0
 		GROUP BY slot_idx
-	`, whereClause)
+	`, effectiveTotalExpr, whereClause)
 
 	queryArgs := make([]any, 0, len(args)+4)
 	queryArgs = append(queryArgs, cutoffUnix, slotSeconds)
@@ -1873,15 +1886,16 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 	}
 
 	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	effectiveTotalExpr := effectiveTotalTokensSQL()
 	query := fmt.Sprintf(`
 		SELECT COALESCE(NULLIF(api_key, ''), 'unknown'),
 			COALESCE(NULLIF(auth_index, ''), 'unknown'),
 			COUNT(*),
-			COALESCE(SUM(CASE WHEN failed=0 THEN total_tokens ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN failed=0 THEN %s ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s
 		GROUP BY COALESCE(NULLIF(api_key, ''), 'unknown'), COALESCE(NULLIF(auth_index, ''), 'unknown')
-	`, whereClause)
+	`, effectiveTotalExpr, whereClause)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

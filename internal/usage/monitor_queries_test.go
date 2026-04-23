@@ -95,6 +95,48 @@ func TestSQLiteUsageStoreQueryMonitorRequestLogs_ApiNameMatches(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.APIs, []string{"alpha-key"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{
+			APIKey:       "api-a",
+			AuthIndex:    "burn",
+			RequestedAt:  base.Add(-2 * time.Hour),
+			InputTokens:  71,
+			OutputTokens: 1,
+			CachedTokens: 71,
+			TotalTokens:  0,
+		},
+		UsageRecord{
+			APIKey:       "api-b",
+			AuthIndex:    "burn",
+			RequestedAt:  base.Add(-90 * time.Minute),
+			InputTokens:  63,
+			CachedTokens: 48,
+			TotalTokens:  0,
+		},
+	)
+
+	rows, err := store.QueryMonitorKeyTokenStats(ctx, MonitorQueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryMonitorKeyTokenStats failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("unexpected row count: got %d want 2", len(rows))
+	}
+	if rows[0].APIKey != "api-a" || rows[0].TotalTokens != 72 {
+		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+	if rows[1].APIKey != "api-b" || rows[1].TotalTokens != 63 {
+		t.Fatalf("unexpected second row: %+v", rows[1])
+	}
+}
+
 func TestSQLiteUsageStoreQueryMonitorChannelStats(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)
