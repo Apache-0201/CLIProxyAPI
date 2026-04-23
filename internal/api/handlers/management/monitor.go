@@ -38,13 +38,14 @@ type monitorRecord struct {
 }
 
 type monitorRecordFilter struct {
-	APIKey      string
-	APIContains string
-	Model       string
-	Source      string
-	Status      string
-	Start       *time.Time
-	End         *time.Time
+	APIKey         string
+	APIContains    string
+	APIMatchedKeys []string
+	Model          string
+	Source         string
+	Status         string
+	Start          *time.Time
+	End            *time.Time
 }
 
 type monitorRecentRequest struct {
@@ -169,15 +170,7 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 1)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Status:      status,
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, status)
 
 	if dbPlugin != nil {
 		queryResult, queryErr := dbPlugin.QueryMonitorRequestLogs(c.Request.Context(), toUsageMonitorFilter(filter), page, pageSize, monitorRecentLimit)
@@ -321,13 +314,7 @@ func (h *Handler) GetMonitorChannelStats(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 7)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 	modelFilter := firstQuery(c, "model")
 
 	if dbPlugin != nil {
@@ -514,13 +501,7 @@ func (h *Handler) GetMonitorFailureAnalysis(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 7)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 	modelFilter := firstQuery(c, "model")
 
 	if dbPlugin != nil {
@@ -719,8 +700,20 @@ func (f monitorRecordFilter) matches(record monitorRecord) bool {
 	if f.APIKey != "" && record.APIKey != f.APIKey {
 		return false
 	}
-	if f.APIContains != "" && !strings.Contains(strings.ToLower(record.APIKey), strings.ToLower(f.APIContains)) {
-		return false
+	if f.APIContains != "" {
+		apiKeyContains := strings.Contains(strings.ToLower(record.APIKey), strings.ToLower(f.APIContains))
+		if !apiKeyContains {
+			matched := false
+			for _, apiKey := range f.APIMatchedKeys {
+				if record.APIKey == apiKey {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
 	}
 	if f.Model != "" && record.Model != f.Model {
 		return false
@@ -786,13 +779,14 @@ func requestGroupKey(source, model string) string {
 
 func toUsageMonitorFilter(filter monitorRecordFilter) usage.MonitorQueryFilter {
 	return usage.MonitorQueryFilter{
-		APIKey:      strings.TrimSpace(filter.APIKey),
-		APIContains: strings.TrimSpace(filter.APIContains),
-		Model:       strings.TrimSpace(filter.Model),
-		Source:      strings.TrimSpace(filter.Source),
-		Status:      strings.TrimSpace(filter.Status),
-		Start:       filter.Start,
-		End:         filter.End,
+		APIKey:         strings.TrimSpace(filter.APIKey),
+		APIContains:    strings.TrimSpace(filter.APIContains),
+		APIMatchedKeys: append([]string(nil), filter.APIMatchedKeys...),
+		Model:          strings.TrimSpace(filter.Model),
+		Source:         strings.TrimSpace(filter.Source),
+		Status:         strings.TrimSpace(filter.Status),
+		Start:          filter.Start,
+		End:            filter.End,
 	}
 }
 
@@ -1069,18 +1063,11 @@ func calcRate(success, total int64) float64 {
 	return math.Round(raw*10) / 10
 }
 
-func perRequestTokPerSec(outputTokens, latencyMs, firstTokenLatencyMs int64) float64 {
+func perRequestTokPerSec(outputTokens, latencyMs, _ int64) float64 {
 	if latencyMs <= 0 || outputTokens <= 0 {
 		return 0
 	}
-	if firstTokenLatencyMs <= 0 {
-		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
-	}
-	effectiveLatencyMs := latencyMs - firstTokenLatencyMs
-	if effectiveLatencyMs <= 0 || effectiveLatencyMs*100 >= latencyMs*80 {
-		return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
-	}
-	return math.Round(float64(outputTokens)*1000.0/float64(effectiveLatencyMs)*10) / 10
+	return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
 }
 
 func timePointer(value time.Time) *time.Time {
@@ -1204,15 +1191,7 @@ func (h *Handler) GetMonitorKpi(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 7)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Status:      status,
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, status)
 
 	if dbPlugin != nil {
 		result, queryErr := dbPlugin.QueryMonitorKpi(c.Request.Context(), toUsageMonitorFilter(filter))
@@ -1311,14 +1290,7 @@ func (h *Handler) GetMonitorModelDistribution(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 7)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	if dbPlugin != nil {
 		sortByTokens := strings.ToLower(firstQuery(c, "sort")) == "tokens"
@@ -1408,14 +1380,7 @@ func (h *Handler) GetMonitorDailyTrend(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 30)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	if dbPlugin != nil {
 		result, queryErr := dbPlugin.QueryMonitorDailyTrend(c.Request.Context(), toUsageMonitorFilter(filter))
@@ -1511,14 +1476,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 1)
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
@@ -1655,14 +1613,7 @@ func (h *Handler) GetMonitorHourlyModels(c *gin.Context) {
 		return
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	now := time.Now()
 	cutoff := now.Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
@@ -1831,14 +1782,7 @@ func (h *Handler) GetMonitorHourlyTokens(c *gin.Context) {
 		return
 	}
 
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
-	}
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	now := time.Now()
 	cutoff := now.Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
@@ -1941,15 +1885,12 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
-		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
-		Model:       firstQuery(c, "model"),
-		Source:      firstQuery(c, "source", "channel"),
-		Start:       start,
-		End:         end,
+	if granularity == "minute" && hours > 24 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "minute granularity supports at most 24 hours"})
+		return
 	}
+
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	now := time.Now()
 	anchor := now
@@ -2041,7 +1982,7 @@ func parseMonitorPerformanceHoursParam(c *gin.Context) (int, error) {
 		return 0, errInvalidInteger()
 	}
 	switch hours {
-	case 6, 12, 24:
+	case 6, 12, 24, 168:
 		return hours, nil
 	default:
 		return 0, errInvalidInteger()

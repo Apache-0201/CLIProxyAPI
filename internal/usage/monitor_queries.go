@@ -21,13 +21,14 @@ var (
 
 // MonitorQueryFilter describes shared query filters for monitor APIs.
 type MonitorQueryFilter struct {
-	APIKey      string
-	APIContains string
-	Model       string
-	Source      string
-	Status      string
-	Start       *time.Time
-	End         *time.Time
+	APIKey         string
+	APIContains    string
+	APIMatchedKeys []string
+	Model          string
+	Source         string
+	Status         string
+	Start          *time.Time
+	End            *time.Time
 }
 
 // MonitorRecentRequest stores the request status and time for trend bars.
@@ -1281,8 +1282,17 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 		args = append(args, filter.APIKey)
 	}
 	if filter.APIContains != "" {
-		clauses = append(clauses, "LOWER(api_key) LIKE ? ESCAPE '\\'")
-		args = append(args, "%"+escapeSQLiteLike(strings.ToLower(filter.APIContains))+"%")
+		apiKeyLikeClause := "LOWER(api_key) LIKE ? ESCAPE '\\'"
+		apiKeyLikeArg := "%" + escapeSQLiteLike(strings.ToLower(filter.APIContains)) + "%"
+		if len(filter.APIMatchedKeys) > 0 {
+			inClause, inArgs := toInClause(filter.APIMatchedKeys)
+			clauses = append(clauses, "("+apiKeyLikeClause+" OR api_key IN ("+inClause+"))")
+			args = append(args, apiKeyLikeArg)
+			args = append(args, inArgs...)
+		} else {
+			clauses = append(clauses, apiKeyLikeClause)
+			args = append(args, apiKeyLikeArg)
+		}
 	}
 	if filter.Model != "" {
 		clauses = append(clauses, "model = ?")
@@ -1323,6 +1333,25 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 func normalizeMonitorFilter(filter MonitorQueryFilter) MonitorQueryFilter {
 	filter.APIKey = strings.TrimSpace(filter.APIKey)
 	filter.APIContains = strings.TrimSpace(filter.APIContains)
+	if len(filter.APIMatchedKeys) > 0 {
+		seen := make(map[string]struct{}, len(filter.APIMatchedKeys))
+		keys := make([]string, 0, len(filter.APIMatchedKeys))
+		for _, apiKey := range filter.APIMatchedKeys {
+			trimmed := strings.TrimSpace(apiKey)
+			if trimmed == "" {
+				continue
+			}
+			if _, exists := seen[trimmed]; exists {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			keys = append(keys, trimmed)
+		}
+		sort.Strings(keys)
+		filter.APIMatchedKeys = keys
+	} else {
+		filter.APIMatchedKeys = nil
+	}
 	filter.Model = strings.TrimSpace(filter.Model)
 
 	source := strings.TrimSpace(filter.Source)

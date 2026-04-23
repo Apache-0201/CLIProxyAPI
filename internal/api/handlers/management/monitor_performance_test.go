@@ -93,6 +93,16 @@ func TestGetMonitorHourlyPerformance_RejectsUnsupportedWindow(t *testing.T) {
 	}
 }
 
+func TestGetMonitorHourlyPerformance_RejectsMinuteGranularityForSevenDays(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newMonitorTestHandler(testUsageRecord(time.Now(), "api-1", "model-a", "source-a", false, 1000, 200))
+	rr := executeMonitorRequest(h.GetMonitorHourlyPerformance, "/monitor/hourly-performance?hours=168&granularity=minute")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestGetMonitorHourlyPerformance_HourGranularityAveragesRPMPerHour(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -175,5 +185,36 @@ func TestGetMonitorHourlyPerformance_UsesRequestedRangeEndAsAnchor(t *testing.T)
 	expectedLastSlot := anchor.Format("2006-01-02T15:04:05-07:00")
 	if got := resp.Slots[len(resp.Slots)-1]; got != expectedLastSlot {
 		t.Fatalf("unexpected slot anchor: got %s want %s", got, expectedLastSlot)
+	}
+}
+
+func TestGetMonitorHourlyPerformance_AcceptsSevenDayHourlyWindow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().Local().Truncate(time.Hour)
+	slotTime := now.Add(-24 * time.Hour)
+
+	h := newMonitorTestHandler(
+		testUsageRecord(slotTime.Add(10*time.Minute), "api-1", "model-a", "source-a", false, 1000, 180),
+	)
+
+	rr := executeMonitorRequest(h.GetMonitorHourlyPerformance, "/monitor/hourly-performance?hours=168&granularity=hour")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Slots       []string `json:"slots"`
+		Granularity string   `json:"granularity"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if resp.Granularity != "hour" {
+		t.Fatalf("unexpected granularity: %s", resp.Granularity)
+	}
+	if len(resp.Slots) != 168 {
+		t.Fatalf("unexpected slot count: got %d want 168", len(resp.Slots))
 	}
 }

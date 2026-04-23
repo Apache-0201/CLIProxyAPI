@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -16,17 +18,17 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
-func TestPerRequestTokPerSecUsesTotalLatencyWhenStreamingGapIsLarge(t *testing.T) {
+func TestPerRequestTokPerSecUsesTotalLatency(t *testing.T) {
 	got := perRequestTokPerSec(120, 1000, 200)
 	if got != 120 {
 		t.Fatalf("tok/s = %v, want 120", got)
 	}
 }
 
-func TestPerRequestTokPerSecSubtractsTTFTWhenStreamingGapIsNotLarge(t *testing.T) {
+func TestPerRequestTokPerSecIgnoresFirstTokenLatency(t *testing.T) {
 	got := perRequestTokPerSec(120, 1000, 700)
-	if got != 400 {
-		t.Fatalf("tok/s = %v, want 400", got)
+	if got != 120 {
+		t.Fatalf("tok/s = %v, want 120", got)
 	}
 }
 
@@ -256,6 +258,54 @@ func TestGetMonitorRequestLogs_ApiFilterContains(t *testing.T) {
 		if !strings.Contains(item.APIKey, "abc") {
 			t.Fatalf("api_filter failed, got api_key=%s", item.APIKey)
 		}
+	}
+}
+
+func TestGetMonitorRequestLogs_ApiFilterMatchesConfiguredName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
+	h := newMonitorTestHandler(
+		testUsageRecord(base.Add(-3*time.Hour), "abc-111", "model-a", "source-a", false, 1000, 200),
+		testUsageRecord(base.Add(-2*time.Hour), "xyz-222", "model-a", "source-a", false, 1000, 200),
+	)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := `
+auth:
+  providers:
+    config-api-key:
+      api-key-entries:
+        - api-key: abc-111
+          name: Alpha Team
+        - api-key: xyz-222
+          name: Beta Team
+`
+	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(configYAML)), 0o600); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+	h.configFilePath = configPath
+
+	rr := executeMonitorRequest(h.GetMonitorRequestLogs, "/monitor/request-logs?api_filter=alpha")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Total int `json:"total"`
+		Items []struct {
+			APIKey string `json:"api_key"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("unexpected filtered total: total=%d items=%d", resp.Total, len(resp.Items))
+	}
+	if resp.Items[0].APIKey != "abc-111" {
+		t.Fatalf("api_filter by name failed, got api_key=%s", resp.Items[0].APIKey)
 	}
 }
 

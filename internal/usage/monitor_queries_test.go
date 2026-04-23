@@ -64,6 +64,37 @@ func TestSQLiteUsageStoreQueryMonitorRequestLogs(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.Sources, []string{"source-a"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorRequestLogs_ApiNameMatches(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "alpha-key", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-3 * time.Hour), TotalTokens: 10},
+		UsageRecord{APIKey: "beta-key", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Hour), TotalTokens: 20},
+	)
+
+	result, err := store.QueryMonitorRequestLogs(ctx, MonitorQueryFilter{
+		APIContains:    "alice",
+		APIMatchedKeys: []string{"alpha-key"},
+	}, 1, 20, 3)
+	if err != nil {
+		t.Fatalf("QueryMonitorRequestLogs failed: %v", err)
+	}
+
+	if result.Total != 1 {
+		t.Fatalf("unexpected total: got %d want 1", result.Total)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("unexpected item count: got %d want 1", len(result.Items))
+	}
+	if result.Items[0].APIKey != "alpha-key" {
+		t.Fatalf("unexpected api key: %s", result.Items[0].APIKey)
+	}
+	assertStringSliceEqual(t, result.Filters.APIs, []string{"alpha-key"})
+}
+
 func TestSQLiteUsageStoreQueryMonitorChannelStats(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)
