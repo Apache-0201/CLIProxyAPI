@@ -224,6 +224,7 @@ type MonitorKeyStatsRow struct {
 // MonitorKeyTokenStatsRow represents per client API key token usage for one auth account.
 type MonitorKeyTokenStatsRow struct {
 	APIKey      string
+	Source      string
 	AuthIndex   string
 	Requests    int64
 	TotalTokens int64
@@ -1889,12 +1890,20 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 	effectiveTotalExpr := effectiveTotalTokensSQL()
 	query := fmt.Sprintf(`
 		SELECT COALESCE(NULLIF(api_key, ''), 'unknown'),
+			COALESCE(NULLIF(source, ''), 'unknown'),
 			COALESCE(NULLIF(auth_index, ''), 'unknown'),
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN failed=0 THEN %s ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s
-		GROUP BY COALESCE(NULLIF(api_key, ''), 'unknown'), COALESCE(NULLIF(auth_index, ''), 'unknown')
+		GROUP BY
+			COALESCE(NULLIF(api_key, ''), 'unknown'),
+			COALESCE(NULLIF(source, ''), 'unknown'),
+			COALESCE(NULLIF(auth_index, ''), 'unknown')
+		ORDER BY
+			COALESCE(NULLIF(api_key, ''), 'unknown') ASC,
+			COALESCE(NULLIF(source, ''), 'unknown') ASC,
+			COALESCE(NULLIF(auth_index, ''), 'unknown') ASC
 	`, effectiveTotalExpr, whereClause)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1906,7 +1915,7 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 	items := make([]MonitorKeyTokenStatsRow, 0)
 	for rows.Next() {
 		var item MonitorKeyTokenStatsRow
-		if err = rows.Scan(&item.APIKey, &item.AuthIndex, &item.Requests, &item.TotalTokens); err != nil {
+		if err = rows.Scan(&item.APIKey, &item.Source, &item.AuthIndex, &item.Requests, &item.TotalTokens); err != nil {
 			return nil, fmt.Errorf("usage store: scan monitor key token stats row: %w", err)
 		}
 		items = append(items, item)

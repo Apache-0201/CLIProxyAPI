@@ -13,9 +13,9 @@ import (
 func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	base := time.Date(2026, 4, 21, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecordWithAuth(base.Add(-4*time.Hour), "api-a", "auth-1", false),
-		testUsageRecordWithAuth(base.Add(-3*time.Hour), "api-b", "auth-1", false),
-		testUsageRecordWithAuth(base.Add(-2*time.Hour), "api-a", "auth-1", false),
+		testUsageRecordWithAuthAndSource(base.Add(-4*time.Hour), "api-a", "auth-1", "burn-source", false),
+		testUsageRecordWithAuthAndSource(base.Add(-3*time.Hour), "api-b", "auth-1", "burn-source", false),
+		testUsageRecordWithAuthAndSource(base.Add(-2*time.Hour), "api-a", "auth-2", "burn-source", false),
 		testUsageRecordWithAuth(base.Add(-90*time.Minute), "api-d", "auth-2", false),
 		testUsageRecordWithAuth(base.Add(-60*time.Minute), "api-c", "auth-2", true),
 		testUsageRecordWithAuth(base.Add(-30*time.Hour), "api-old", "auth-1", false),
@@ -41,6 +41,7 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 			AccountTokenShare float64          `json:"account_token_share"`
 			TotalTokenShare   float64          `json:"total_token_share"`
 			AuthTokens        map[string]int64 `json:"auth_tokens"`
+			SourceTokens      map[string]int64 `json:"source_tokens"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -53,7 +54,7 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	if resp.TotalTokens != 120 {
 		t.Fatalf("unexpected total tokens: got %d want 120", resp.TotalTokens)
 	}
-	if resp.Account["auth-1"] != 90 || resp.Account["auth-2"] != 30 {
+	if resp.Account["auth-1"] != 60 || resp.Account["auth-2"] != 60 {
 		t.Fatalf("unexpected account totals: %+v", resp.Account)
 	}
 	if len(resp.Items) != 4 {
@@ -64,19 +65,28 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	if first.APIKey != "api-a" || first.AuthIndex != "auth-1" {
 		t.Fatalf("unexpected first item identity: %+v", first)
 	}
-	if first.Requests != 2 || first.TotalTokens != 60 || first.AccountTokens != 90 {
+	if first.Requests != 2 || first.TotalTokens != 60 || first.AccountTokens != 60 {
 		t.Fatalf("unexpected first aggregate: %+v", first)
 	}
-	if first.AccountTokenShare != 66.7 || first.TotalTokenShare != 50 {
+	if first.AccountTokenShare != 50 || first.TotalTokenShare != 50 {
 		t.Fatalf("unexpected first shares: account=%.1f total=%.1f", first.AccountTokenShare, first.TotalTokenShare)
 	}
-	if first.AuthTokens["auth-1"] != 60 {
+	if first.AuthTokens["auth-1"] != 30 || first.AuthTokens["auth-2"] != 30 {
 		t.Fatalf("unexpected first auth token breakdown: %+v", first.AuthTokens)
+	}
+	if first.SourceTokens["burn-source"] != 60 {
+		t.Fatalf("unexpected first source token breakdown: %+v", first.SourceTokens)
 	}
 }
 
 func testUsageRecordWithAuth(ts time.Time, apiKey, authIndex string, failed bool) coreusage.Record {
 	record := testUsageRecord(ts, apiKey, "model-a", "source-a", failed, 1000, 200)
+	record.AuthIndex = authIndex
+	return record
+}
+
+func testUsageRecordWithAuthAndSource(ts time.Time, apiKey, authIndex, source string, failed bool) coreusage.Record {
+	record := testUsageRecord(ts, apiKey, "model-a", source, failed, 1000, 200)
 	record.AuthIndex = authIndex
 	return record
 }

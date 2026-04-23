@@ -104,6 +104,7 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 	insertUsageRecords(t, store,
 		UsageRecord{
 			APIKey:       "api-a",
+			Source:       "burn-source",
 			AuthIndex:    "burn",
 			RequestedAt:  base.Add(-2 * time.Hour),
 			InputTokens:  71,
@@ -112,7 +113,16 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 			TotalTokens:  0,
 		},
 		UsageRecord{
+			APIKey:      "api-a",
+			Source:      "legacy-burn-source",
+			AuthIndex:   "burn-legacy",
+			RequestedAt: base.Add(-110 * time.Minute),
+			InputTokens: 8,
+			TotalTokens: 0,
+		},
+		UsageRecord{
 			APIKey:       "api-b",
+			Source:       "burn-source",
 			AuthIndex:    "burn",
 			RequestedAt:  base.Add(-90 * time.Minute),
 			InputTokens:  63,
@@ -126,14 +136,17 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 		t.Fatalf("QueryMonitorKeyTokenStats failed: %v", err)
 	}
 
-	if len(rows) != 2 {
-		t.Fatalf("unexpected row count: got %d want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("unexpected row count: got %d want 3", len(rows))
 	}
-	if rows[0].APIKey != "api-a" || rows[0].TotalTokens != 72 {
+	if rows[0].APIKey != "api-a" || rows[0].Source != "burn-source" || rows[0].TotalTokens != 72 {
 		t.Fatalf("unexpected first row: %+v", rows[0])
 	}
-	if rows[1].APIKey != "api-b" || rows[1].TotalTokens != 63 {
+	if rows[1].APIKey != "api-a" || rows[1].Source != "legacy-burn-source" || rows[1].TotalTokens != 8 {
 		t.Fatalf("unexpected second row: %+v", rows[1])
+	}
+	if rows[2].APIKey != "api-b" || rows[2].Source != "burn-source" || rows[2].TotalTokens != 63 {
+		t.Fatalf("unexpected third row: %+v", rows[2])
 	}
 }
 

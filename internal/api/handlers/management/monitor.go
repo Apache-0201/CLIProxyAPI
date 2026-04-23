@@ -1164,13 +1164,15 @@ type monitorKeyTokenStatsItem struct {
 	AccountTokenShare float64          `json:"account_token_share"`
 	TotalTokenShare   float64          `json:"total_token_share"`
 	AuthTokens        map[string]int64 `json:"auth_tokens"`
+	SourceTokens      map[string]int64 `json:"source_tokens"`
 }
 
 type monitorKeyTokenAcc struct {
-	APIKey      string
-	Requests    int64
-	TotalTokens int64
-	AuthTokens  map[string]int64
+	APIKey       string
+	Requests     int64
+	TotalTokens  int64
+	AuthTokens   map[string]int64
+	SourceTokens map[string]int64
 }
 
 // GetMonitorKpi returns aggregated KPI metrics from usage records.
@@ -1480,10 +1482,14 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
-	addRow := func(apiKey, authIndex string, requests, totalTokens int64) {
+	addRow := func(apiKey, source, authIndex string, requests, totalTokens int64) {
 		apiKey = strings.TrimSpace(apiKey)
 		if apiKey == "" {
 			apiKey = "unknown"
+		}
+		source = strings.TrimSpace(source)
+		if source == "" {
+			source = "unknown"
 		}
 		authIndex = strings.TrimSpace(authIndex)
 		if authIndex == "" {
@@ -1492,12 +1498,17 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 
 		acc, ok := keyTotals[apiKey]
 		if !ok {
-			acc = &monitorKeyTokenAcc{APIKey: apiKey, AuthTokens: make(map[string]int64)}
+			acc = &monitorKeyTokenAcc{
+				APIKey:       apiKey,
+				AuthTokens:   make(map[string]int64),
+				SourceTokens: make(map[string]int64),
+			}
 			keyTotals[apiKey] = acc
 		}
 		acc.Requests += requests
 		acc.TotalTokens += totalTokens
 		acc.AuthTokens[authIndex] += totalTokens
+		acc.SourceTokens[source] += totalTokens
 		accountTotals[authIndex] += totalTokens
 	}
 
@@ -1505,7 +1516,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		rows, queryErr := dbPlugin.QueryMonitorKeyTokenStats(c.Request.Context(), toUsageMonitorFilter(filter))
 		if queryErr == nil {
 			for _, row := range rows {
-				addRow(row.APIKey, row.AuthIndex, row.Requests, row.TotalTokens)
+				addRow(row.APIKey, row.Source, row.AuthIndex, row.Requests, row.TotalTokens)
 			}
 			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
 			return
@@ -1520,7 +1531,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		if !record.Failed {
 			tokens = record.TotalTokens
 		}
-		addRow(record.APIKey, record.AuthIndex, 1, tokens)
+		addRow(record.APIKey, record.Source, record.AuthIndex, 1, tokens)
 	})
 
 	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
@@ -1544,6 +1555,10 @@ func buildMonitorKeyTokenStatsResponse(
 		for account, tokens := range acc.AuthTokens {
 			authTokens[account] = tokens
 		}
+		sourceTokens := make(map[string]int64, len(acc.SourceTokens))
+		for source, tokens := range acc.SourceTokens {
+			sourceTokens[source] = tokens
+		}
 		items = append(items, monitorKeyTokenStatsItem{
 			APIKey:            acc.APIKey,
 			AuthIndex:         authIndex,
@@ -1553,6 +1568,7 @@ func buildMonitorKeyTokenStatsResponse(
 			AccountTokenShare: calcRate(acc.AuthTokens[authIndex], accountTokens),
 			TotalTokenShare:   calcRate(acc.TotalTokens, totalTokens),
 			AuthTokens:        authTokens,
+			SourceTokens:      sourceTokens,
 		})
 	}
 
