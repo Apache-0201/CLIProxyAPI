@@ -1043,7 +1043,6 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	}
 
 	// Remove deprecated sections before merging back the sanitized config.
-	removeLegacyAuthBlock(original.Content[0])
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
 	removeLegacyAmpKeys(original.Content[0])
 	removeLegacyGenerativeLanguageKeys(original.Content[0])
@@ -1221,6 +1220,9 @@ func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
 	if dst == nil || src == nil {
 		return
 	}
+	if preserveAPIKeyEntryMetadata(dst, src, currentPath) {
+		return
+	}
 	switch src.Kind {
 	case yaml.MappingNode:
 		if dst.Kind != yaml.MappingNode {
@@ -1275,6 +1277,49 @@ func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
 		// Fallback: replace shallowly
 		copyNodeShallow(dst, src)
 	}
+}
+
+func preserveAPIKeyEntryMetadata(dst, src *yaml.Node, path []string) bool {
+	if len(path) != 1 || path[0] != "api-keys" {
+		return false
+	}
+	if dst == nil || src == nil || dst.Kind != yaml.MappingNode || src.Kind != yaml.ScalarNode {
+		return false
+	}
+	apiKey := strings.TrimSpace(src.Value)
+	if apiKey == "" {
+		return false
+	}
+	setMappingScalarPreserve(dst, apiKeyFieldName(dst), apiKey)
+	return true
+}
+
+func apiKeyFieldName(node *yaml.Node) string {
+	for _, key := range []string{"api-key", "apiKey", "key", "Key"} {
+		if findMapKeyIndex(node, key) >= 0 {
+			return key
+		}
+	}
+	return "api-key"
+}
+
+func setMappingScalarPreserve(node *yaml.Node, key, value string) {
+	if node == nil || node.Kind != yaml.MappingNode || key == "" {
+		return
+	}
+	idx := findMapKeyIndex(node, key)
+	if idx >= 0 && idx+1 < len(node.Content) && node.Content[idx+1] != nil {
+		target := node.Content[idx+1]
+		target.Kind = yaml.ScalarNode
+		target.Tag = "!!str"
+		target.Value = value
+		return
+	}
+	node.Content = append(
+		node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
 }
 
 // findMapKeyIndex returns the index of key node in dst mapping (index of key, not value).
@@ -1506,6 +1551,14 @@ func matchSequenceElement(original []*yaml.Node, used []bool, target *yaml.Node)
 					continue
 				}
 				if strings.TrimSpace(original[i].Value) == val {
+					return i
+				}
+			}
+			for i := range original {
+				if used[i] || original[i] == nil || original[i].Kind != yaml.MappingNode {
+					continue
+				}
+				if mappingScalar(original[i], "api-key", "api_key", "apiKey", "apikey", "key", "Key") == val {
 					return i
 				}
 			}
