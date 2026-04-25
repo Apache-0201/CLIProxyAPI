@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,16 +20,33 @@ import (
 )
 
 func TestPerRequestTokPerSecUsesTotalLatency(t *testing.T) {
-	got := perRequestTokPerSec(120, 1000, 200)
+	got := perRequestTokPerSec(120, 1000)
 	if got != 120 {
 		t.Fatalf("tok/s = %v, want 120", got)
 	}
 }
 
-func TestPerRequestTokPerSecIgnoresFirstTokenLatency(t *testing.T) {
-	got := perRequestTokPerSec(120, 1000, 700)
-	if got != 120 {
-		t.Fatalf("tok/s = %v, want 120", got)
+func TestPerRequestTokPerSecMatchesCcLoadTotalDuration(t *testing.T) {
+	cases := []struct {
+		name         string
+		outputTokens int64
+		durationMs   int64
+		want         float64
+	}{
+		{name: "streaming log", outputTokens: 957, durationMs: 21000, want: 45.57142857142857},
+		{name: "non streaming log", outputTokens: 736, durationMs: 17000, want: 43.294117647058826},
+		{name: "first byte equals duration", outputTokens: 100, durationMs: 3000, want: 33.333333333333336},
+		{name: "zero output", outputTokens: 0, durationMs: 12000, want: 0},
+		{name: "long first byte case still uses total duration", outputTokens: 437, durationMs: 19980, want: 21.87187187187187},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := perRequestTokPerSec(tc.outputTokens, tc.durationMs)
+			if math.Abs(got-tc.want) > 0.000000001 {
+				t.Fatalf("tok/s = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -52,15 +70,17 @@ func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 
 	var resp struct {
 		Items []struct {
-			Timestamp       time.Time `json:"timestamp"`
-			APIKey          string    `json:"api_key"`
-			Model           string    `json:"model"`
-			Source          string    `json:"source"`
-			Failed          bool      `json:"failed"`
-			RequestCount    int64     `json:"request_count"`
-			SuccessRate     float64   `json:"success_rate"`
-			TotalDurationMs int64     `json:"total_duration_ms"`
-			RecentRequests  []struct {
+			Timestamp           time.Time `json:"timestamp"`
+			APIKey              string    `json:"api_key"`
+			Model               string    `json:"model"`
+			Source              string    `json:"source"`
+			Failed              bool      `json:"failed"`
+			RequestCount        int64     `json:"request_count"`
+			SuccessRate         float64   `json:"success_rate"`
+			FirstTokenLatencyMs int64     `json:"first_token_latency_ms"`
+			TotalDurationMs     int64     `json:"total_duration_ms"`
+			TokensPerSecond     float64   `json:"tokens_per_second"`
+			RecentRequests      []struct {
 				Failed bool `json:"failed"`
 			} `json:"recent_requests"`
 		} `json:"items"`
@@ -102,8 +122,14 @@ func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 	if resp.Items[0].SuccessRate != 66.7 {
 		t.Fatalf("unexpected success_rate: got %.1f want 66.7", resp.Items[0].SuccessRate)
 	}
-	if resp.Items[0].TotalDurationMs != 250 {
-		t.Fatalf("unexpected total_duration_ms: got %d want 250", resp.Items[0].TotalDurationMs)
+	if resp.Items[0].FirstTokenLatencyMs != 250 {
+		t.Fatalf("unexpected first_token_latency_ms: got %d want 250", resp.Items[0].FirstTokenLatencyMs)
+	}
+	if resp.Items[0].TotalDurationMs != 1000 {
+		t.Fatalf("unexpected total_duration_ms: got %d want 1000", resp.Items[0].TotalDurationMs)
+	}
+	if resp.Items[0].TokensPerSecond != 20 {
+		t.Fatalf("unexpected tokens_per_second: got %.1f want 20.0", resp.Items[0].TokensPerSecond)
 	}
 	if len(resp.Items[0].RecentRequests) != 3 {
 		t.Fatalf("unexpected recent_requests count: got %d want 3", len(resp.Items[0].RecentRequests))

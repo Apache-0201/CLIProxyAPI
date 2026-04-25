@@ -225,6 +225,33 @@ func TestSQLiteUsageStoreQueryMonitorFailureStats(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.Models, []string{"model-a", "model-b", "model-c"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorPerformanceSlots_UsesSuccessfulFirstTokenSamples(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-30 * time.Minute), FirstTokenLatencyMs: 100},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-20 * time.Minute), Failed: true, FirstTokenLatencyMs: 900},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-10 * time.Minute), FirstTokenLatencyMs: 0},
+	)
+
+	rows, err := store.QueryMonitorPerformanceSlots(ctx, MonitorQueryFilter{}, base.Add(-time.Hour).Unix(), base.Unix(), 3600)
+	if err != nil {
+		t.Fatalf("QueryMonitorPerformanceSlots failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("unexpected row count: got %d want 1", len(rows))
+	}
+	if rows[0].Requests != 3 {
+		t.Fatalf("unexpected requests: got %d want 3", rows[0].Requests)
+	}
+	if rows[0].FirstTokenLatencySamples != 1 || rows[0].FirstTokenLatencyTotalMs != 100 {
+		t.Fatalf("unexpected first token aggregate: %+v", rows[0])
+	}
+}
+
 func newTestSQLiteUsageStore(t *testing.T) *sqliteUsageStore {
 	t.Helper()
 	store, err := newSQLiteUsageStoreAtPath(filepath.Join(t.TempDir(), "usage.db"))

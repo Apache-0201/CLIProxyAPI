@@ -59,22 +59,23 @@ type monitorTimeRange struct {
 }
 
 type monitorRequestLogItem struct {
-	Timestamp       time.Time              `json:"timestamp"`
-	APIKey          string                 `json:"api_key"`
-	Model           string                 `json:"model"`
-	Source          string                 `json:"source"`
-	AuthIndex       string                 `json:"auth_index"`
-	Failed          bool                   `json:"failed"`
-	InputTokens     int64                  `json:"input_tokens"`
-	OutputTokens    int64                  `json:"output_tokens"`
-	ReasoningTokens int64                  `json:"reasoning_tokens"`
-	CachedTokens    int64                  `json:"cached_tokens"`
-	TotalTokens     int64                  `json:"total_tokens"`
-	RequestCount    int64                  `json:"request_count"`
-	SuccessRate     float64                `json:"success_rate"`
-	TotalDurationMs int64                  `json:"total_duration_ms"`
-	TokensPerSecond float64                `json:"tokens_per_second"`
-	RecentRequests  []monitorRecentRequest `json:"recent_requests"`
+	Timestamp           time.Time              `json:"timestamp"`
+	APIKey              string                 `json:"api_key"`
+	Model               string                 `json:"model"`
+	Source              string                 `json:"source"`
+	AuthIndex           string                 `json:"auth_index"`
+	Failed              bool                   `json:"failed"`
+	InputTokens         int64                  `json:"input_tokens"`
+	OutputTokens        int64                  `json:"output_tokens"`
+	ReasoningTokens     int64                  `json:"reasoning_tokens"`
+	CachedTokens        int64                  `json:"cached_tokens"`
+	TotalTokens         int64                  `json:"total_tokens"`
+	RequestCount        int64                  `json:"request_count"`
+	SuccessRate         float64                `json:"success_rate"`
+	FirstTokenLatencyMs int64                  `json:"first_token_latency_ms"`
+	TotalDurationMs     int64                  `json:"total_duration_ms"`
+	TokensPerSecond     float64                `json:"tokens_per_second"`
+	RecentRequests      []monitorRecentRequest `json:"recent_requests"`
 }
 
 type monitorFilterOptions struct {
@@ -179,22 +180,23 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			for _, row := range queryResult.Items {
 				groupStats := queryResult.GroupStats[usage.MonitorGroupKey(row.Source, row.Model)]
 				items = append(items, monitorRequestLogItem{
-					Timestamp:       row.Timestamp,
-					APIKey:          row.APIKey,
-					Model:           row.Model,
-					Source:          row.Source,
-					AuthIndex:       row.AuthIndex,
-					Failed:          row.Failed,
-					InputTokens:     row.InputTokens,
-					OutputTokens:    row.OutputTokens,
-					ReasoningTokens: row.ReasoningTokens,
-					CachedTokens:    row.CachedTokens,
-					TotalTokens:     row.TotalTokens,
-					RequestCount:    groupStats.Total,
-					SuccessRate:     calcRate(groupStats.Success, groupStats.Total),
-					TotalDurationMs: row.FirstTokenLatencyMs,
-					TokensPerSecond: perRequestTokPerSec(row.OutputTokens, row.LatencyMs, row.FirstTokenLatencyMs),
-					RecentRequests:  fromUsageRecentRequests(groupStats.Recent),
+					Timestamp:           row.Timestamp,
+					APIKey:              row.APIKey,
+					Model:               row.Model,
+					Source:              row.Source,
+					AuthIndex:           row.AuthIndex,
+					Failed:              row.Failed,
+					InputTokens:         row.InputTokens,
+					OutputTokens:        row.OutputTokens,
+					ReasoningTokens:     row.ReasoningTokens,
+					CachedTokens:        row.CachedTokens,
+					TotalTokens:         row.TotalTokens,
+					RequestCount:        groupStats.Total,
+					SuccessRate:         calcRate(groupStats.Success, groupStats.Total),
+					FirstTokenLatencyMs: row.FirstTokenLatencyMs,
+					TotalDurationMs:     row.LatencyMs,
+					TokensPerSecond:     perRequestTokPerSec(row.OutputTokens, row.LatencyMs),
+					RecentRequests:      fromUsageRecentRequests(groupStats.Recent),
 				})
 			}
 
@@ -239,19 +241,20 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			sourceSet[record.Source] = struct{}{}
 		}
 		logs = append(logs, monitorRequestLogItem{
-			Timestamp:       record.Timestamp,
-			APIKey:          record.APIKey,
-			Model:           record.Model,
-			Source:          record.Source,
-			AuthIndex:       record.AuthIndex,
-			Failed:          record.Failed,
-			InputTokens:     record.InputTokens,
-			OutputTokens:    record.OutputTokens,
-			ReasoningTokens: record.ReasoningTokens,
-			CachedTokens:    record.CachedTokens,
-			TotalTokens:     record.TotalTokens,
-			TotalDurationMs: record.FirstTokenLatencyMs,
-			TokensPerSecond: perRequestTokPerSec(record.OutputTokens, record.LatencyMs, record.FirstTokenLatencyMs),
+			Timestamp:           record.Timestamp,
+			APIKey:              record.APIKey,
+			Model:               record.Model,
+			Source:              record.Source,
+			AuthIndex:           record.AuthIndex,
+			Failed:              record.Failed,
+			InputTokens:         record.InputTokens,
+			OutputTokens:        record.OutputTokens,
+			ReasoningTokens:     record.ReasoningTokens,
+			CachedTokens:        record.CachedTokens,
+			TotalTokens:         record.TotalTokens,
+			FirstTokenLatencyMs: record.FirstTokenLatencyMs,
+			TotalDurationMs:     record.LatencyMs,
+			TokensPerSecond:     perRequestTokPerSec(record.OutputTokens, record.LatencyMs),
 		})
 	})
 
@@ -1063,11 +1066,11 @@ func calcRate(success, total int64) float64 {
 	return math.Round(raw*10) / 10
 }
 
-func perRequestTokPerSec(outputTokens, latencyMs, _ int64) float64 {
-	if latencyMs <= 0 || outputTokens <= 0 {
+func perRequestTokPerSec(outputTokens, durationMs int64) float64 {
+	if durationMs <= 0 || outputTokens <= 0 {
 		return 0
 	}
-	return math.Round(float64(outputTokens)*1000.0/float64(latencyMs)*10) / 10
+	return float64(outputTokens) * 1000.0 / float64(durationMs)
 }
 
 func timePointer(value time.Time) *time.Time {
@@ -1975,7 +1978,7 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 			return
 		}
 		requests[idx]++
-		if record.FirstTokenLatencyMs > 0 {
+		if !record.Failed && record.FirstTokenLatencyMs > 0 {
 			latencySamples[idx]++
 			latencyTotals[idx] += record.FirstTokenLatencyMs
 		}

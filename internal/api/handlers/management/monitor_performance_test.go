@@ -67,8 +67,8 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	if math.Abs(resp.AvgRPM[slotIndex]-3) > 0.0001 {
 		t.Fatalf("unexpected avg_rpm for slot: got %.4f want 3.0000", resp.AvgRPM[slotIndex])
 	}
-	if math.Abs(resp.AvgFirstTokenLatencyMs[slotIndex]-300) > 0.0001 {
-		t.Fatalf("unexpected avg_first_token_latency_ms for slot: got %.4f want 300.0000", resp.AvgFirstTokenLatencyMs[slotIndex])
+	if math.Abs(resp.AvgFirstTokenLatencyMs[slotIndex]-150) > 0.0001 {
+		t.Fatalf("unexpected avg_first_token_latency_ms for slot: got %.4f want 150.0000", resp.AvgFirstTokenLatencyMs[slotIndex])
 	}
 
 	otherSlotIndex := findSlot(otherSlotTime)

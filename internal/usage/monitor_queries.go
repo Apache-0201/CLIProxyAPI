@@ -1773,8 +1773,8 @@ func (s *sqliteUsageStore) QueryMonitorPerformanceSlots(ctx context.Context, fil
 	query := fmt.Sprintf(`
 		SELECT (requested_at - ?) / ? AS slot_idx,
 			COUNT(*),
-			COALESCE(SUM(CASE WHEN first_token_latency_ms > 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN first_token_latency_ms > 0 THEN first_token_latency_ms ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN first_token_latency_ms ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s AND requested_at >= ? AND requested_at <= ?
 		GROUP BY slot_idx

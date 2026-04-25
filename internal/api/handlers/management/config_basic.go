@@ -1,6 +1,8 @@
 package management
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ import (
 const (
 	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
 	latestReleaseUserAgent = "CLIProxyAPI"
+	configHashHeader       = "X-Config-Hash"
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
@@ -109,6 +112,38 @@ func WriteConfig(path string, data []byte) error {
 	return f.Close()
 }
 
+func configContentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func setConfigVersionHeaders(c *gin.Context, hash string) {
+	if hash == "" {
+		return
+	}
+	c.Header(configHashHeader, hash)
+	c.Header("ETag", fmt.Sprintf("%q", hash))
+}
+
+func configPreconditionMatches(headerValue, currentHash string) bool {
+	for _, part := range strings.Split(headerValue, ",") {
+		value := strings.TrimSpace(part)
+		value = strings.TrimPrefix(value, "W/")
+		value = strings.Trim(value, `"`)
+		if value == currentHash {
+			return true
+		}
+	}
+	return false
+}
+
+func requestedConfigHash(c *gin.Context) string {
+	if value := strings.TrimSpace(c.GetHeader("If-Match")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.GetHeader(configHashHeader))
+}
+
 func (h *Handler) PutConfigYAML(c *gin.Context) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -149,8 +184,37 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if WriteConfig(h.configFilePath, body) != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
+	currentData, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+		return
+	}
+	currentHash := configContentHash(currentData)
+	setConfigVersionHeaders(c, currentHash)
+
+	expectedHash := requestedConfigHash(c)
+	if expectedHash == "" {
+		c.JSON(http.StatusPreconditionRequired, gin.H{
+			"error":   "config_version_required",
+			"message": "config version is required; reload config before saving",
+		})
+		return
+	}
+	if !configPreconditionMatches(expectedHash, currentHash) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":        "config_conflict",
+			"message":      "config has been modified; reload before saving",
+			"current_hash": currentHash,
+		})
+		return
+	}
+
+	if errWrite := WriteConfig(h.configFilePath, body); errWrite != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": errWrite.Error()})
 		return
 	}
 	// Reload into handler to keep memory in sync
@@ -160,6 +224,9 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.cfg = newCfg
+	if updatedData, errRead := os.ReadFile(h.configFilePath); errRead == nil {
+		setConfigVersionHeaders(c, configContentHash(updatedData))
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
@@ -175,6 +242,7 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
+	setConfigVersionHeaders(c, configContentHash(data))
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
