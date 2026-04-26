@@ -291,6 +291,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Setup routes
 	s.setupRoutes()
+	s.registerPublicMonitorRoutes()
 
 	// Register Amp module using V2 interface with Context
 	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
@@ -444,6 +445,21 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+}
+
+func (s *Server) registerPublicMonitorRoutes() {
+	if s == nil || s.engine == nil || s.mgmt == nil {
+		return
+	}
+
+	monitor := s.engine.Group("/v0/management/public/custom/monitor")
+	monitor.Use(s.mgmt.PublicMonitorAPIKeyMiddleware())
+	{
+		monitor.GET("/request-logs", s.mgmt.GetMonitorRequestLogs)
+		monitor.GET("/kpi", s.mgmt.GetMonitorKpi)
+		monitor.GET("/daily-trend", s.mgmt.GetMonitorDailyTrend)
+		monitor.GET("/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
+	}
 }
 
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.

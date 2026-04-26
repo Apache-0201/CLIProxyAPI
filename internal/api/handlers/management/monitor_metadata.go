@@ -1,6 +1,7 @@
 package management
 
 import (
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -11,6 +12,8 @@ import (
 )
 
 type monitorYAMLRecord map[string]any
+
+const publicMonitorAPIKeyContextKey = "public_monitor_api_key"
 
 func asMonitorYAMLRecord(value any) monitorYAMLRecord {
 	record, ok := value.(map[string]any)
@@ -79,6 +82,55 @@ func collectMonitorAPIKeyNames(entries []any) map[string]string {
 	return names
 }
 
+func collectMonitorAPIKeyConfig(entries []any) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	keys := make(map[string]string)
+	for _, entry := range entries {
+		record := asMonitorYAMLRecord(entry)
+		apiKey := monitorYAMLString(record, "api-key", "apiKey", "key", "Key")
+		if apiKey == "" {
+			if text, ok := entry.(string); ok {
+				apiKey = strings.TrimSpace(text)
+			}
+		}
+		if apiKey == "" {
+			continue
+		}
+		keys[apiKey] = monitorYAMLString(record, "name")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
+func parseMonitorAPIKeyConfigMap(data []byte) map[string]string {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+
+	topLevelEntries := monitorYAMLSlice(root, "api-keys")
+	authBlock := asMonitorYAMLRecord(root["auth"])
+	providers := asMonitorYAMLRecord(authBlock["providers"])
+	configAPIKeyProvider := asMonitorYAMLRecord(providers["config-api-key"])
+	if configAPIKeyProvider != nil {
+		providerEntries := monitorYAMLSlice(configAPIKeyProvider, "api-key-entries", "api-keys")
+		if keys := collectMonitorAPIKeyConfig(providerEntries); len(keys) > 0 {
+			return keys
+		}
+	}
+
+	return collectMonitorAPIKeyConfig(topLevelEntries)
+}
+
 func parseMonitorAPIKeyNameMap(data []byte) map[string]string {
 	if len(data) == 0 {
 		return nil
@@ -103,6 +155,32 @@ func parseMonitorAPIKeyNameMap(data []byte) map[string]string {
 	return collectMonitorAPIKeyNames(topLevelEntries)
 }
 
+func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
+	if h == nil {
+		return nil
+	}
+
+	configFilePath := strings.TrimSpace(h.configFilePath)
+	if configFilePath != "" {
+		if data, err := os.ReadFile(configFilePath); err == nil {
+			if keys := parseMonitorAPIKeyConfigMap(data); len(keys) > 0 {
+				return keys
+			}
+		}
+	}
+
+	if h.cfg == nil || len(h.cfg.APIKeys) == 0 {
+		return nil
+	}
+	keys := make(map[string]string, len(h.cfg.APIKeys))
+	for _, apiKey := range h.cfg.APIKeys {
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			keys[trimmed] = ""
+		}
+	}
+	return keys
+}
+
 func (h *Handler) monitorAPIKeyNameMap() map[string]string {
 	if h == nil {
 		return nil
@@ -116,6 +194,26 @@ func (h *Handler) monitorAPIKeyNameMap() map[string]string {
 		return nil
 	}
 	return parseMonitorAPIKeyNameMap(data)
+}
+
+func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		apiKey := strings.TrimSpace(firstQuery(c, "api_key", "api", "api-key"))
+		if apiKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+			c.Abort()
+			return
+		}
+
+		if _, ok := h.monitorAPIKeyConfigMap()[apiKey]; !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			c.Abort()
+			return
+		}
+
+		c.Set(publicMonitorAPIKeyContextKey, apiKey)
+		c.Next()
+	}
 }
 
 func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []string {
@@ -138,8 +236,17 @@ func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []strin
 }
 
 func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time, status string) monitorRecordFilter {
+	apiKey := firstQuery(c, "api", "api_key")
+	if c != nil {
+		if value, exists := c.Get(publicMonitorAPIKeyContextKey); exists {
+			if publicAPIKey, ok := value.(string); ok {
+				apiKey = publicAPIKey
+			}
+		}
+	}
+
 	filter := monitorRecordFilter{
-		APIKey:      firstQuery(c, "api", "api_key"),
+		APIKey:      apiKey,
 		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
 		Model:       firstQuery(c, "model"),
 		Source:      firstQuery(c, "source", "channel"),

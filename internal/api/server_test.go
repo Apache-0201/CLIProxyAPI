@@ -52,6 +52,30 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
+func TestPublicMonitorRouteAllowsConfiguredKeyWithoutManagementAuth(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/public/custom/monitor/kpi?api_key=test-key", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMonitorRouteRejectsUnknownKey(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/public/custom/monitor/kpi?api_key=missing-key", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestUsagePersistenceEnabledHotReload(t *testing.T) {
 	t.Setenv("MYSQLSTORE_DSN", "")
 	t.Setenv("mysqlstore_dsn", "")
