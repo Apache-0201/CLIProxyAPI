@@ -29,6 +29,7 @@ type MonitorQueryFilter struct {
 	Status         string
 	Start          *time.Time
 	End            *time.Time
+	MaxRows        int
 }
 
 // MonitorRecentRequest stores the request status and time for trend bars.
@@ -70,12 +71,14 @@ type MonitorRequestGroupStats struct {
 
 // MonitorRequestLogsResult is the SQL-backed result for monitor request logs.
 type MonitorRequestLogsResult struct {
-	Items      []MonitorRequestLog
-	Total      int64
-	Page       int
-	PageSize   int
-	Filters    MonitorFilterOptions
-	GroupStats map[string]MonitorRequestGroupStats
+	Items        []MonitorRequestLog
+	Total        int64
+	TotalLimited bool
+	TotalLimit   int
+	Page         int
+	PageSize     int
+	Filters      MonitorFilterOptions
+	GroupStats   map[string]MonitorRequestGroupStats
 }
 
 // MonitorModelStats is the model-level aggregate used by channel/failure analysis.
@@ -500,20 +503,50 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	page = clampInt(page, 1, 1_000_000, 1)
 	pageSize = clampInt(pageSize, 1, 200, 20)
 	recentLimit = clampInt(recentLimit, 1, 100, monitorDefaultRecentLimit)
+	maxRows := 0
+	if filter.MaxRows > 0 {
+		maxRows = clampInt(filter.MaxRows, 1, 1_000_000, filter.MaxRows)
+	}
 
 	whereClause, args := buildSQLiteMonitorWhere(filter, true)
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM usage_records WHERE %s", whereClause)
 
 	var total int64
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return MonitorRequestLogsResult{}, fmt.Errorf("usage store: query monitor logs total: %w", err)
+	totalLimited := false
+	if maxRows > 0 {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (SELECT 1 FROM usage_records WHERE %s LIMIT ?) AS limited_usage_records", whereClause)
+		countArgs := append(copyArgs(args), maxRows+1)
+		if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: query monitor logs total: %w", err)
+		}
+		if total > int64(maxRows) {
+			total = int64(maxRows)
+			totalLimited = true
+		}
+	} else {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM usage_records WHERE %s", whereClause)
+		if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: query monitor logs total: %w", err)
+		}
 	}
 
 	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
 	if totalPages > 0 && page > totalPages {
 		page = totalPages
 	}
+	if totalPages == 0 {
+		page = 1
+	}
 	offset := (page - 1) * pageSize
+	queryLimit := pageSize
+	if maxRows > 0 {
+		remaining := maxRows - offset
+		if remaining < queryLimit {
+			queryLimit = remaining
+		}
+		if queryLimit < 0 {
+			queryLimit = 0
+		}
+	}
 
 	query := fmt.Sprintf(`
 		SELECT api_key, model, COALESCE(NULLIF(source, ''), 'unknown'), auth_index,
@@ -524,7 +557,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		ORDER BY requested_at DESC, id DESC
 		LIMIT ? OFFSET ?
 	`, whereClause)
-	queryArgs := append(copyArgs(args), pageSize, offset)
+	queryArgs := append(copyArgs(args), queryLimit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -532,7 +565,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	}
 	defer rows.Close()
 
-	items := make([]MonitorRequestLog, 0, pageSize)
+	items := make([]MonitorRequestLog, 0, queryLimit)
 	groups := make(map[string]monitorGroupEntry)
 	for rows.Next() {
 		var (
@@ -651,18 +684,20 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		}
 	}
 
-	filters, err := s.queryMonitorFilterOptions(ctx, filter, true, true)
+	filters, err := s.queryMonitorRequestLogFilterOptions(ctx, filter, true, true, maxRows)
 	if err != nil {
 		return MonitorRequestLogsResult{}, err
 	}
 
 	return MonitorRequestLogsResult{
-		Items:      items,
-		Total:      total,
-		Page:       page,
-		PageSize:   pageSize,
-		Filters:    filters,
-		GroupStats: groupStats,
+		Items:        items,
+		Total:        total,
+		TotalLimited: totalLimited,
+		TotalLimit:   maxRows,
+		Page:         page,
+		PageSize:     pageSize,
+		Filters:      filters,
+		GroupStats:   groupStats,
 	}, nil
 }
 
@@ -1237,6 +1272,75 @@ func (s *sqliteUsageStore) queryMonitorFilterOptions(ctx context.Context, filter
 	}
 
 	return options, nil
+}
+
+func (s *sqliteUsageStore) queryMonitorRequestLogFilterOptions(ctx context.Context, filter MonitorQueryFilter, includeStatus bool, includeAPIs bool, maxRows int) (MonitorFilterOptions, error) {
+	if maxRows <= 0 {
+		return s.queryMonitorFilterOptions(ctx, filter, includeStatus, includeAPIs)
+	}
+
+	whereClause, args := buildSQLiteMonitorWhere(filter, includeStatus)
+	options := MonitorFilterOptions{APIs: []string{}, Models: []string{}, Sources: []string{}}
+
+	var err error
+	if includeAPIs {
+		options.APIs, err = s.queryLimitedRequestLogDistinctValues(ctx, "api_key", whereClause, args, maxRows)
+		if err != nil {
+			return MonitorFilterOptions{}, err
+		}
+	}
+
+	options.Models, err = s.queryLimitedRequestLogDistinctValues(ctx, "model", whereClause, args, maxRows)
+	if err != nil {
+		return MonitorFilterOptions{}, err
+	}
+
+	options.Sources, err = s.queryLimitedRequestLogDistinctValues(ctx, "source_value", whereClause, args, maxRows)
+	if err != nil {
+		return MonitorFilterOptions{}, err
+	}
+
+	return options, nil
+}
+
+func (s *sqliteUsageStore) queryLimitedRequestLogDistinctValues(ctx context.Context, column, whereClause string, args []any, maxRows int) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT DISTINCT %s AS value FROM (
+			SELECT api_key, model, COALESCE(NULLIF(source, ''), 'unknown') AS source_value
+			FROM usage_records
+			WHERE %s
+			ORDER BY requested_at DESC, id DESC
+			LIMIT ?
+		) AS limited_usage_records
+		ORDER BY value ASC
+	`, column, whereClause)
+	queryArgs := append(copyArgs(args), maxRows)
+
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: query limited distinct values: %w", err)
+	}
+	defer rows.Close()
+
+	values := make([]string, 0)
+	for rows.Next() {
+		var value sql.NullString
+		if err = rows.Scan(&value); err != nil {
+			return nil, fmt.Errorf("usage store: scan limited distinct value: %w", err)
+		}
+		if !value.Valid {
+			continue
+		}
+		trimmed := strings.TrimSpace(value.String)
+		if trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate limited distinct values: %w", err)
+	}
+	sort.Strings(values)
+	return values, nil
 }
 
 func (s *sqliteUsageStore) queryDistinctValues(ctx context.Context, expression, whereClause string, args []any) ([]string, error) {

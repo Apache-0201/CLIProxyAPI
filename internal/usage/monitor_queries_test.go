@@ -64,6 +64,39 @@ func TestSQLiteUsageStoreQueryMonitorRequestLogs(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.Sources, []string{"source-a"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorRequestLogs_MaxRows(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-1 * time.Minute), TotalTokens: 10},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Minute), TotalTokens: 20},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-3 * time.Minute), TotalTokens: 30},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-4 * time.Minute), TotalTokens: 40},
+		UsageRecord{APIKey: "api-2", Model: "model-b", Source: "source-b", RequestedAt: base.Add(-5 * time.Minute), TotalTokens: 50},
+	)
+
+	result, err := store.QueryMonitorRequestLogs(ctx, MonitorQueryFilter{MaxRows: 3}, 99, 2, 3)
+	if err != nil {
+		t.Fatalf("QueryMonitorRequestLogs failed: %v", err)
+	}
+
+	if result.Total != 3 || !result.TotalLimited || result.TotalLimit != 3 {
+		t.Fatalf("unexpected capped total: total=%d limited=%v limit=%d", result.Total, result.TotalLimited, result.TotalLimit)
+	}
+	if result.Page != 2 || len(result.Items) != 1 {
+		t.Fatalf("unexpected capped page: page=%d items=%d", result.Page, len(result.Items))
+	}
+	if !result.Items[0].Timestamp.Equal(base.Add(-3 * time.Minute)) {
+		t.Fatalf("unexpected last capped item timestamp: %s", result.Items[0].Timestamp)
+	}
+	assertStringSliceEqual(t, result.Filters.APIs, []string{"api-1"})
+	assertStringSliceEqual(t, result.Filters.Models, []string{"model-a"})
+	assertStringSliceEqual(t, result.Filters.Sources, []string{"source-a"})
+}
+
 func TestSQLiteUsageStoreQueryMonitorRequestLogs_ApiNameMatches(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)
