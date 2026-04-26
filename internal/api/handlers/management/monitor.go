@@ -1804,11 +1804,16 @@ func (h *Handler) GetMonitorHourlyTokens(c *gin.Context) {
 	filter := h.buildMonitorRecordFilter(c, start, end, "")
 
 	now := time.Now()
-	cutoff := now.Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
+	anchor := now
+	if end != nil && end.Before(anchor) {
+		anchor = *end
+	}
+	alignedAnchor := anchor.Local().Truncate(time.Hour)
+	cutoff := alignedAnchor.Add(-time.Duration(hours-1) * time.Hour)
 
 	hourSlots := make([]string, 0, hours)
 	hourIndex := make(map[string]int, hours)
-	for t := cutoff; !t.After(now.Truncate(time.Hour)); t = t.Add(time.Hour) {
+	for t := cutoff; !t.After(alignedAnchor); t = t.Add(time.Hour) {
 		key := t.Local().Format("2006-01-02T15:04:05-07:00")
 		hourIndex[key] = len(hourSlots)
 		hourSlots = append(hourSlots, key)
@@ -1816,7 +1821,7 @@ func (h *Handler) GetMonitorHourlyTokens(c *gin.Context) {
 	slotCount := len(hourSlots)
 
 	if dbPlugin := usage.GetDatabasePlugin(); dbPlugin != nil {
-		tokenSlots, queryErr := dbPlugin.QueryMonitorHourlyTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), now.Unix(), 3600)
+		tokenSlots, queryErr := dbPlugin.QueryMonitorHourlyTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), alignedAnchor.Unix(), 3600)
 		if queryErr == nil {
 			totalTokens := make([]int64, slotCount)
 			inputTokens := make([]int64, slotCount)
