@@ -19,6 +19,7 @@ const (
 	monitorDefaultTopLimit = 10
 	monitorMaxTopLimit     = 100
 	monitorRecentLimit     = 12
+	monitorLogMaxLimit     = 10000
 )
 
 type monitorRecord struct {
@@ -46,6 +47,7 @@ type monitorRecordFilter struct {
 	Status         string
 	Start          *time.Time
 	End            *time.Time
+	MaxRows        int
 }
 
 type monitorRecentRequest struct {
@@ -172,6 +174,7 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	}
 
 	filter := h.buildMonitorRecordFilter(c, start, end, status)
+	filter.MaxRows = monitorLogMaxLimit
 
 	if dbPlugin != nil {
 		queryResult, queryErr := dbPlugin.QueryMonitorRequestLogs(c.Request.Context(), toUsageMonitorFilter(filter), page, pageSize, monitorRecentLimit)
@@ -204,13 +207,15 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			totalPages := calcTotalPages(total, queryResult.PageSize)
 
 			c.JSON(http.StatusOK, gin.H{
-				"items":       items,
-				"page":        queryResult.Page,
-				"page_size":   queryResult.PageSize,
-				"total":       total,
-				"total_pages": totalPages,
-				"has_prev":    queryResult.Page > 1 && totalPages > 0,
-				"has_next":    totalPages > 0 && queryResult.Page < totalPages,
+				"items":         items,
+				"page":          queryResult.Page,
+				"page_size":     queryResult.PageSize,
+				"total":         total,
+				"total_pages":   totalPages,
+				"total_limited": queryResult.TotalLimited,
+				"total_limit":   queryResult.TotalLimit,
+				"has_prev":      queryResult.Page > 1 && totalPages > 0,
+				"has_next":      totalPages > 0 && queryResult.Page < totalPages,
 				"filters": monitorFilterOptions{
 					APIs:    queryResult.Filters.APIs,
 					Models:  queryResult.Filters.Models,
@@ -223,22 +228,10 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	}
 
 	logs := make([]monitorRequestLogItem, 0, 128)
-	apiSet := make(map[string]struct{})
-	modelSet := make(map[string]struct{})
-	sourceSet := make(map[string]struct{})
 
 	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
 		if !filter.matches(record) {
 			return
-		}
-		if record.APIKey != "" {
-			apiSet[record.APIKey] = struct{}{}
-		}
-		if record.Model != "" {
-			modelSet[record.Model] = struct{}{}
-		}
-		if record.Source != "" {
-			sourceSet[record.Source] = struct{}{}
 		}
 		logs = append(logs, monitorRequestLogItem{
 			Timestamp:           record.Timestamp,
@@ -261,6 +254,29 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	sort.Slice(logs, func(i, j int) bool {
 		return logs[i].Timestamp.After(logs[j].Timestamp)
 	})
+	total := len(logs)
+	totalLimited := false
+	if filter.MaxRows > 0 && len(logs) > filter.MaxRows {
+		logs = logs[:filter.MaxRows]
+		total = filter.MaxRows
+		totalLimited = true
+	}
+
+	apiSet := make(map[string]struct{})
+	modelSet := make(map[string]struct{})
+	sourceSet := make(map[string]struct{})
+	for _, item := range logs {
+		if item.APIKey != "" {
+			apiSet[item.APIKey] = struct{}{}
+		}
+		if item.Model != "" {
+			modelSet[item.Model] = struct{}{}
+		}
+		if item.Source != "" {
+			sourceSet[item.Source] = struct{}{}
+		}
+	}
+
 	requestStats := buildRequestGroupStats(logs)
 	for i := range logs {
 		key := requestGroupKey(logs[i].Source, logs[i].Model)
@@ -270,7 +286,6 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 		logs[i].RecentRequests = copyRecentRequests(stats.Recent)
 	}
 
-	total := len(logs)
 	totalPages := calcTotalPages(total, pageSize)
 	if totalPages > 0 && page > totalPages {
 		page = totalPages
@@ -278,13 +293,15 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 	items := paginate(logs, page, pageSize)
 
 	c.JSON(http.StatusOK, gin.H{
-		"items":       items,
-		"page":        page,
-		"page_size":   pageSize,
-		"total":       total,
-		"total_pages": totalPages,
-		"has_prev":    page > 1 && totalPages > 0,
-		"has_next":    totalPages > 0 && page < totalPages,
+		"items":         items,
+		"page":          page,
+		"page_size":     pageSize,
+		"total":         total,
+		"total_pages":   totalPages,
+		"total_limited": totalLimited,
+		"total_limit":   filter.MaxRows,
+		"has_prev":      page > 1 && totalPages > 0,
+		"has_next":      totalPages > 0 && page < totalPages,
 		"filters": monitorFilterOptions{
 			APIs:    setToSortedSlice(apiSet),
 			Models:  setToSortedSlice(modelSet),
@@ -790,6 +807,7 @@ func toUsageMonitorFilter(filter monitorRecordFilter) usage.MonitorQueryFilter {
 		Status:         strings.TrimSpace(filter.Status),
 		Start:          filter.Start,
 		End:            filter.End,
+		MaxRows:        filter.MaxRows,
 	}
 }
 

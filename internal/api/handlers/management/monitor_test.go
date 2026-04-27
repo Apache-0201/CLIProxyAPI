@@ -140,6 +140,47 @@ func TestGetMonitorRequestLogs_TimeRangeAndPagination(t *testing.T) {
 	assertStringSliceEqual(t, resp.Filters.Sources, []string{"source-1"})
 }
 
+func TestGetMonitorRequestLogs_LimitsBrowsableRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	base := time.Date(2026, 2, 6, 12, 0, 0, 0, time.Local)
+	records := make([]coreusage.Record, 0, 10001)
+	for i := 0; i < 10001; i++ {
+		records = append(records, testUsageRecord(base.Add(-time.Duration(i)*time.Second), "api-1", "model-1", "source-1", false, 1000, 250))
+	}
+	h := newMonitorTestHandler(records...)
+
+	path := "/monitor/request-logs?start_time=" + url.QueryEscape(base.Add(-23*time.Hour).Format(time.RFC3339)) +
+		"&end_time=" + url.QueryEscape(base.Format(time.RFC3339)) + "&page=999&page_size=20"
+	rr := executeMonitorRequest(h.GetMonitorRequestLogs, path)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Items        []json.RawMessage `json:"items"`
+		Page         int               `json:"page"`
+		PageSize     int               `json:"page_size"`
+		Total        int               `json:"total"`
+		TotalPages   int               `json:"total_pages"`
+		TotalLimited bool              `json:"total_limited"`
+		TotalLimit   int               `json:"total_limit"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if resp.Total != 10000 || resp.TotalPages != 500 || resp.Page != 500 {
+		t.Fatalf("unexpected capped pagination: total=%d totalPages=%d page=%d", resp.Total, resp.TotalPages, resp.Page)
+	}
+	if !resp.TotalLimited || resp.TotalLimit != 10000 {
+		t.Fatalf("expected limited response, got limited=%v limit=%d", resp.TotalLimited, resp.TotalLimit)
+	}
+	if len(resp.Items) != 20 {
+		t.Fatalf("unexpected item count: got %d want 20", len(resp.Items))
+	}
+}
+
 func TestGetMonitorChannelStats_StatusFilterAndAggregate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
