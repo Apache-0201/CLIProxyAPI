@@ -15,6 +15,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkapi "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -73,6 +74,32 @@ func TestPublicMonitorRouteRejectsUnknownKey(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUserMonitorRouteServesControlPanelAsset(t *testing.T) {
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.DisableControlPanel = false
+
+	filePath := managementasset.FilePath(server.configFilePath)
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatalf("failed to create static dir: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("<html>management panel</html>"), 0o644); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	for _, path := range []string{"/management.html", "/user/monitor"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status for %s: got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+		if body := rr.Body.String(); !strings.Contains(body, "management panel") {
+			t.Fatalf("response body for %s missing management asset: %s", path, body)
+		}
 	}
 }
 
