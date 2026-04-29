@@ -478,6 +478,7 @@ func (s *Server) registerPublicMonitorRoutes() {
 	{
 		monitor.GET("/request-logs", s.mgmt.GetMonitorRequestLogs)
 		monitor.GET("/kpi", s.mgmt.GetMonitorKpi)
+		monitor.GET("/quota", s.mgmt.GetPublicMonitorCodexQuota)
 		monitor.GET("/daily-trend", s.mgmt.GetMonitorDailyTrend)
 		monitor.GET("/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
 	}
