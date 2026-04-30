@@ -31,7 +31,6 @@ type ConvertCodexResponseToClaudeParams struct {
 	ThinkingBlockOpen         bool
 	ThinkingStopPending       bool
 	ThinkingSignature         string
-	ThinkingSummarySeen       bool
 }
 
 // ConvertCodexResponseToClaude performs sophisticated streaming response format conversion.
@@ -87,8 +86,12 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 		if params.ThinkingBlockOpen && params.ThinkingStopPending {
 			output = append(output, finalizeCodexThinkingBlock(params)...)
 		}
-		params.ThinkingSummarySeen = true
-		output = append(output, startCodexThinkingBlock(params)...)
+		template = []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`)
+		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+		params.ThinkingBlockOpen = true
+		params.ThinkingStopPending = false
+
+		output = translatorcommon.AppendSSEEventBytes(output, "content_block_start", template, 2)
 	} else if typeStr == "response.reasoning_summary_text.delta" {
 		template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`)
 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
@@ -97,6 +100,9 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
 	} else if typeStr == "response.reasoning_summary_part.done" {
 		params.ThinkingStopPending = true
+		if params.ThinkingSignature != "" {
+			output = append(output, finalizeCodexThinkingBlock(params)...)
+		}
 	} else if typeStr == "response.content_part.added" {
 		template = []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
@@ -163,8 +169,10 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 
 			output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
 		} else if itemType == "reasoning" {
-			params.ThinkingSummarySeen = false
 			params.ThinkingSignature = itemResult.Get("encrypted_content").String()
+			if params.ThinkingStopPending {
+				output = append(output, finalizeCodexThinkingBlock(params)...)
+			}
 		}
 	} else if typeStr == "response.output_item.done" {
 		itemResult := rootResult.Get("item")
@@ -221,13 +229,8 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 			if signature := itemResult.Get("encrypted_content").String(); signature != "" {
 				params.ThinkingSignature = signature
 			}
-			if params.ThinkingSummarySeen {
-				output = append(output, finalizeCodexThinkingBlock(params)...)
-			} else {
-				output = append(output, finalizeCodexSignatureOnlyThinkingBlock(params)...)
-			}
+			output = append(output, finalizeCodexThinkingBlock(params)...)
 			params.ThinkingSignature = ""
-			params.ThinkingSummarySeen = false
 		}
 	} else if typeStr == "response.function_call_arguments.delta" {
 		params.HasReceivedArgumentsDelta = true
@@ -432,29 +435,6 @@ func buildReverseMapFromClaudeOriginalShortToOriginal(original []byte) map[strin
 
 func ClaudeTokenCount(_ context.Context, count int64) []byte {
 	return translatorcommon.ClaudeInputTokensJSON(count)
-}
-
-func startCodexThinkingBlock(params *ConvertCodexResponseToClaudeParams) []byte {
-	if params.ThinkingBlockOpen {
-		return nil
-	}
-
-	template := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`)
-	template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
-	params.ThinkingBlockOpen = true
-	params.ThinkingStopPending = false
-
-	return translatorcommon.AppendSSEEventBytes(nil, "content_block_start", template, 2)
-}
-
-func finalizeCodexSignatureOnlyThinkingBlock(params *ConvertCodexResponseToClaudeParams) []byte {
-	if params.ThinkingSignature == "" {
-		return nil
-	}
-
-	output := startCodexThinkingBlock(params)
-	output = append(output, finalizeCodexThinkingBlock(params)...)
-	return output
 }
 
 func finalizeCodexThinkingBlock(params *ConvertCodexResponseToClaudeParams) []byte {

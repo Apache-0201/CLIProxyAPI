@@ -57,7 +57,6 @@ type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type boundAuthIndexContextKey struct{}
-type disallowFreeAuthContextKey struct{}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
 func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
@@ -105,14 +104,6 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
-}
-
-// WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
-func WithDisallowFreeAuth(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -235,23 +226,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if boundAuthIndex := boundAuthIndexFromContext(ctx); boundAuthIndex != "" {
 		meta[coreexecutor.BoundAuthIndexMetadataKey] = boundAuthIndex
 	}
-	if disallowFreeAuthFromContext(ctx) {
-		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
-	}
 	return meta
-}
-
-// headersFromContext extracts the original HTTP request headers from the gin context
-// embedded in the provided context. This allows session affinity selectors to read
-// client headers like X-Amp-Thread-Id.
-func headersFromContext(ctx context.Context) http.Header {
-	if ctx == nil {
-		return nil
-	}
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-		return ginCtx.Request.Header.Clone()
-	}
-	return nil
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
@@ -314,14 +289,6 @@ func boundAuthIndexFromContext(ctx context.Context) string {
 // integrations that need to verify account-bind middleware wiring.
 func BoundAuthIndexFromContext(ctx context.Context) string {
 	return boundAuthIndexFromContext(ctx)
-}
-
-func disallowFreeAuthFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
-	return ok && raw
 }
 
 // BaseAPIHandler contains the handlers for API endpoints.
@@ -569,7 +536,6 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
-		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
@@ -621,7 +587,6 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
-		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
@@ -680,7 +645,6 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
-		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
