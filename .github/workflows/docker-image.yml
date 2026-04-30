@@ -3,13 +3,13 @@ name: docker-image
 on:
   push:
     tags:
-      - fork/v*
+      - v*
   workflow_dispatch:
     inputs:
       tag:
-        description: '手动指定镜像标签'
+        description: "手动指定镜像标签"
         required: false
-        default: 'manual'
+        default: "manual"
 
 env:
   REGISTRY: ghcr.io

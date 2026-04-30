@@ -3,11 +3,11 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'fork/v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: '手动指定版本标签(例如: fork/v6.60.0)'
+        description: "手动指定版本标签(例如: fork/v6.60.0)"
         required: true
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: "1.26"
           cache: true
 
       - name: Get version info
