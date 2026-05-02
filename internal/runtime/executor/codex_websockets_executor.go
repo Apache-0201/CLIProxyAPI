@@ -1122,16 +1122,22 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connMu.Lock()
 	conn := sess.conn
 	readerConn := sess.readerConn
+	currentAuthID := sess.authID
+	currentWSURL := sess.wsURL
 	sess.connMu.Unlock()
 	if conn != nil {
-		if readerConn != conn {
-			sess.connMu.Lock()
-			sess.readerConn = conn
-			sess.connMu.Unlock()
-			sess.configureConn(conn)
-			go e.readUpstreamLoop(sess, conn)
+		if !canReuseCodexUpstreamConn(conn, currentAuthID, currentWSURL, authID, wsURL) {
+			e.invalidateUpstreamConn(sess, conn, "session_rebind", nil)
+		} else {
+			if readerConn != conn {
+				sess.connMu.Lock()
+				sess.readerConn = conn
+				sess.connMu.Unlock()
+				sess.configureConn(conn)
+				go e.readUpstreamLoop(sess, conn)
+			}
+			return conn, nil, nil
 		}
-		return conn, nil, nil
 	}
 
 	conn, resp, errDial := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
@@ -1158,6 +1164,19 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	go e.readUpstreamLoop(sess, conn)
 	logCodexWebsocketConnected(sess.sessionID, authID, wsURL)
 	return conn, resp, nil
+}
+
+func canReuseCodexUpstreamConn(conn *websocket.Conn, currentAuthID string, currentWSURL string, nextAuthID string, nextWSURL string) bool {
+	if conn == nil {
+		return false
+	}
+	if strings.TrimSpace(currentAuthID) != strings.TrimSpace(nextAuthID) {
+		return false
+	}
+	if strings.TrimSpace(currentWSURL) != strings.TrimSpace(nextWSURL) {
+		return false
+	}
+	return true
 }
 
 func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {

@@ -3,6 +3,7 @@ package executor
 import (
 	"testing"
 
+	"github.com/gorilla/websocket"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -44,5 +45,23 @@ func TestCodexWebsocketsExecutor_SessionStoreSurvivesExecutorReplacement(t *test
 	globalCodexWebsocketSessionStore.mu.Unlock()
 	if presentAfterClose {
 		t.Fatalf("expected session to be removed after explicit close")
+	}
+}
+
+func TestCanReuseCodexUpstreamConnRequiresSameAuthAndURL(t *testing.T) {
+	t.Parallel()
+
+	conn := &websocket.Conn{}
+	if !canReuseCodexUpstreamConn(conn, "auth-a", "wss://example.com/a", "auth-a", "wss://example.com/a") {
+		t.Fatal("expected websocket session to be reusable when auth and url match")
+	}
+	if canReuseCodexUpstreamConn(conn, "auth-a", "wss://example.com/a", "auth-b", "wss://example.com/a") {
+		t.Fatal("expected websocket session reuse to be rejected when auth changes")
+	}
+	if canReuseCodexUpstreamConn(conn, "auth-a", "wss://example.com/a", "auth-a", "wss://example.com/b") {
+		t.Fatal("expected websocket session reuse to be rejected when upstream url changes")
+	}
+	if canReuseCodexUpstreamConn(nil, "auth-a", "wss://example.com/a", "auth-a", "wss://example.com/a") {
+		t.Fatal("expected nil websocket conn to be non-reusable")
 	}
 }
